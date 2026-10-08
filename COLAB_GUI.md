@@ -33,6 +33,8 @@ Colab 计算单元需保持运行。本机需保持联网；本实现不会规�
 
 ## GitHub 源码版本
 
-Notebook 当前固定 SOURCE_COMMIT=b8a3611a0fa815429f5cf353c9ebf34cd018377b，与已推送的本机流水线匹配。打开链接从 main 获取 Notebook，但执行代码来自指定提交，不会自动升级。新运行时需重新获取源码和安装依赖；同一运行时复用检出的版本，版本之间共用 model-cache。之前 /content/youdub-pipeline/model-cache 存在时也会复用。下载模型仍可能在首次运行时发生。
+Notebook 当前固定 SOURCE_COMMIT=ff3ff39c3b7a3d48fbb15079a9f33ce095387801，与已推送的本机流水线匹配。打开链接从 main 获取 Notebook，但执行代码来自指定提交，不会自动升级。新运行时需重新获取源码和安装依赖；同一运行时复用检出的版本，版本之间共用 model-cache。之前 /content/youdub-pipeline/model-cache 存在时也会复用。下载模型仍可能在首次运行时发生。
 
 升级时先停止 worker，更新本机和 SOURCE_COMMIT 到相同的已验证版本，再重新运行安装及预检单元。固定 Tunnel 路由须在 Cloudflare 配置为 HTTP → 127.0.0.1:8011。仓库需要能被 Colab 读取；当前使用公开 HTTPS 读取，不需要 GitHub token，也不向 GitHub 上传任务素材。
+
+模型缓存通过 MODEL_CACHE_DIR 指向真实共享目录；不创建 model-cache 符号链接。此修复需要使用 SOURCE_COMMIT=ff3ff39c3b7a3d48fbb15079a9f33ce095387801 或更新的兼容版本，旧 Drive 副本不会自动更新。
