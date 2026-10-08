@@ -10,7 +10,7 @@
 
 ## Colab
 
-1. 打开 notebooks/YouDub_GUI_Colab.ipynb，GPU 运行时，上传 youdub-colab-worker.zip。
+1. [在 Colab 打开 Notebook](https://colab.research.google.com/github/Kaitzz/free-dubbing/blob/main/notebooks/YouDub_GUI_Colab.ipynb)，选择 GPU 运行时。首个代码单元自动从 Kaitzz/free-dubbing 获取固定提交，无需下载或上传源码包。可以保存到 Drive 后重复使用。
 2. 安装与预检沿用已验证的配置。MiniMax 密钥通过 Colab Secrets 提供，不传输本机 API 密钥。
 3. 在本机 GUI 的「Colab 连接」生成连接密钥；把它和 Tunnel HTTPS 地址填进 Colab。
 4. 运行领取任务单元，回到 GUI 创建任务、查看进度、继续/重做、播放/下载视频。
@@ -30,3 +30,9 @@ GUI 中翻译地址/模型/并发会传给 worker；GUI 密钥只用于本机功
 Colab 计算单元需保持运行。本机需保持联网；本实现不会规避 Colab 的使用限制。
 
 原 GUI 的模型处理逻辑沿用已有适配器：SenseVoice、批量 MiniMax-M3、VoxCPM2 低内存初始化且关闭编译。
+
+## GitHub 源码版本
+
+Notebook 当前固定 SOURCE_COMMIT=b8a3611a0fa815429f5cf353c9ebf34cd018377b，与已推送的本机流水线匹配。打开链接从 main 获取 Notebook，但执行代码来自指定提交，不会自动升级。新运行时需重新获取源码和安装依赖；同一运行时复用检出的版本，版本之间共用 model-cache。之前 /content/youdub-pipeline/model-cache 存在时也会复用。下载模型仍可能在首次运行时发生。
+
+升级时先停止 worker，更新本机和 SOURCE_COMMIT 到相同的已验证版本，再重新运行安装及预检单元。域名激活之前继续使用临时 Tunnel。仓库需要能被 Colab 读取；当前使用公开 HTTPS 读取，不需要 GitHub token，也不向 GitHub 上传任务素材。

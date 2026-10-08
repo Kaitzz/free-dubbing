@@ -34,8 +34,9 @@ export function ColabDialog() {
       <DialogHeader><DialogTitle>连接 Google Colab</DialogTitle></DialogHeader>
       <p>{status ? !status.enabled ? "当前为本机执行模式，请使用 Colab GUI 启动脚本。" : status.connected ? "Colab 已连接，可以创建任务。" : "等待 Colab 连接；新任务会排队。" : "正在读取状态…"}</p>
       {status?.tunnel_url ? <><label htmlFor="colab-url" className="text-sm">本次连接地址</label><input id="colab-url" readOnly value={status.tunnel_url} className="w-full rounded border p-2 text-xs" onFocus={e => e.target.select()} /></> : null}
-      <div className="flex gap-4 text-sm underline"><a href="/api/remote/files/notebook">下载 Colab Notebook</a><a href="/api/remote/files/bundle">下载源码包</a></div>
+      <div className="flex gap-4 text-sm underline"><a href="https://colab.research.google.com/github/Kaitzz/free-dubbing/blob/main/notebooks/YouDub_GUI_Colab.ipynb" target="_blank" rel="noopener noreferrer">在 Colab 打开</a><a href="/api/remote/files/notebook">下载 Notebook（备用）</a></div>
       <ol className="list-decimal space-y-2 pl-5 text-sm">
+        <li>在 Colab 打开 Notebook，选择 GPU 运行时；源码会自动从 GitHub 下载，无需上传源码包。</li>
         <li>使用本机启动脚本提供的 HTTPS Tunnel 地址。</li>
         <li>在下方生成专用连接密钥，填入 Colab worker notebook。</li>
         <li>运行 Colab 的领取任务单元，然后回到这里上传视频。</li>
