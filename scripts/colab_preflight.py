@@ -1,5 +1,7 @@
 """Check full-pipeline dependencies before downloading model weights."""
 import importlib
+import importlib.metadata
+import os
 import subprocess
 import sys
 import tempfile
@@ -10,6 +12,10 @@ import torch
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root/'submodule/demucs'))
+os.environ['PATH'] = str(Path(sys.executable).parent) + os.pathsep + os.environ.get('PATH','')
+node_version = subprocess.check_output(['node','--version'],text=True).strip()
+assert int(node_version.lstrip('v').split('.')[0]) >= 22, 'YouTube requires Node >=22'
+print('YouTube runtime:', node_version, 'yt-dlp:', importlib.metadata.version('yt-dlp'), 'EJS:', importlib.metadata.version('yt-dlp-ejs'))
 assert torch.cuda.is_available(), 'Select a Colab GPU runtime'
 print('GPU:', torch.cuda.get_device_name(0), 'torch:', torch.__version__)
 for name in ['funasr', 'voxcpm', 'demucs.api', 'openai', 'audiostretchy']:

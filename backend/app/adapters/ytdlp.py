@@ -65,7 +65,7 @@ def _ydl_base(source: SourceConfig, proxy_port: str = "") -> dict[str, Any]:
     opts: dict[str, Any] = {
         "noplaylist": True,
         "quiet": True,
-        "no_warnings": True,
+        "no_warnings": False,
         "js_runtimes": {"node": {}},
         "http_headers": {"User-Agent": DEFAULT_USER_AGENT},
     }
@@ -148,7 +148,15 @@ def download_video(
     _ensure_cookie(source)
     info_opts = _ydl_base(source, proxy_port)
     with yt_dlp.YoutubeDL(info_opts) as ydl:
-        info = ydl.extract_info(canonical_url, download=False)
+        info = ydl.extract_info(canonical_url, download=False, process=False)
+
+    if "formats" in info:
+        formats = info.get("formats") or []
+        video_count = sum(f.get("vcodec") not in {None, "none"} for f in formats)
+        audio_count = sum(f.get("acodec") not in {None, "none"} for f in formats)
+        print(f"[download] Available formats: video={video_count}, audio={audio_count}", flush=True)
+        if not video_count or not audio_count:
+            raise RuntimeError("YouTube returned no usable video/audio combination. Check the yt-dlp warnings above for JavaScript/EJS, cookie or PO-token errors; changing the format selector cannot restore missing streams.")
 
     if str(info.get("id", video_id)) != video_id:
         raise ValueError("The resolved video id does not match the submitted URL.")

@@ -91,9 +91,10 @@ def test_download_video_passes_only_the_canonical_url_to_both_ytdlp_sinks(
         def __exit__(self, exc_type, exc, traceback):
             return False
 
-        def extract_info(self, url, *, download):
+        def extract_info(self, url, *, download, process):
             extracted_urls.append(url)
             assert download is False
+            assert process is False
             return {
                 "id": "abcdefghijk",
                 "uploader": "tester",
@@ -158,3 +159,17 @@ def test_download_video_rejects_deceptive_url_before_cookie_or_ytdlp(
         )
 
     assert calls == []
+
+
+def test_metadata_with_only_storyboards_fails_before_download(monkeypatch,tmp_path):
+    class FakeYoutubeDL:
+        def __init__(self,options): assert options['no_warnings'] is False
+        def __enter__(self): return self
+        def __exit__(self,*a): return False
+        def extract_info(self,url,*,download,process):
+            assert process is False
+            return {'id':'abcdefghijk','formats':[{'vcodec':'none','acodec':'none','ext':'mhtml'}]}
+        def download(self,*a): raise AssertionError('Must not download storyboards')
+    monkeypatch.setattr(ytdlp.yt_dlp,'YoutubeDL',FakeYoutubeDL)
+    with pytest.raises(RuntimeError,match='no usable video/audio'):
+        ytdlp.download_video('https://www.youtube.com/watch?v=abcdefghijk',tmp_path,_youtube_source())
