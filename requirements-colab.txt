@@ -1,0 +1,3 @@
+# Install inside a dedicated venv with Colab's CUDA torch constrained.
+-r requirements.txt
+voxcpm==2.0.3

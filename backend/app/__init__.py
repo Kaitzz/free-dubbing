@@ -1,0 +1,2 @@
+"""YouDub FastAPI backend."""
+

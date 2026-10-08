@@ -1,0 +1,94 @@
+import io
+import json
+import time
+from pathlib import Path
+from zipfile import ZipFile
+import pytest
+from fastapi.testclient import TestClient
+from backend.app import config,database,remote,main,auth
+from backend.tests.test_settings_and_api import configure_tmp_runtime,authenticated_client
+from backend.app.remote_archive import unpack,pack
+
+@pytest.fixture
+def setup(monkeypatch,tmp_path):
+    configure_tmp_runtime(monkeypatch,tmp_path)
+    monkeypatch.setattr(config,'DATA_DIR',tmp_path/'data')
+    monkeypatch.setenv('YOUDUB_EXECUTION_BACKEND','colab')
+    remote.init()
+    browser=authenticated_client()
+    token=browser.post('/api/remote/token').json()['token']
+    worker=TestClient(main.app)
+    worker.headers['Authorization']='Bearer '+token
+    return browser,worker,tmp_path
+
+def test_worker_auth_cannot_access_browser_settings(setup):
+    browser,worker,_=setup
+    assert TestClient(main.app).post('/api/colab-worker/claim').status_code==401
+    assert worker.get('/api/settings/openai').status_code==401
+    assert worker.post('/api/colab-worker/claim').json()=={'job':None}
+    assert browser.get('/api/remote/status').json()['connected']
+
+def test_claim_checkpoint_and_manual_continue(setup):
+    browser,worker,root=setup
+    database.save_openai_settings('https://example.com/v1','secret-must-stay-local','MiniMax-M3')
+    task_id=database.create_task('local://upload/test?direction=en-zh',execution_mode='manual')
+    uploads=config.WORKFOLDER/'_uploads'/task_id/'video';uploads.mkdir(parents=True)
+    (uploads/'input.mp4').write_bytes(b'video')
+    job=worker.post('/api/colab-worker/claim').json()['job']
+    assert 'api_key' not in job['settings']
+    assert 'secret-must-stay-local' not in json.dumps(job)
+    assert worker.post('/api/colab-worker/claim').json()['job'] is None
+    assert browser.post('/api/remote/token').status_code==409
+    lease=job['lease'];prefix=f'/api/colab-worker/{lease}'
+    response=worker.get(prefix+'/input')
+    with ZipFile(io.BytesIO(response.content)) as z:
+        assert z.namelist()==['uploads/video/input.mp4']
+    session=root/'remote-session';(session/'media').mkdir(parents=True)
+    (session/'media/video_source.mp4').write_bytes(b'video')
+    archive=root/'output.zip';pack(archive,{'session':session})
+    assert worker.put(prefix+'/output?offset=1',content=b'x').status_code==409
+    assert worker.put(prefix+'/output?offset=0',content=archive.read_bytes()).status_code==200
+    task=job['task'];task['status']='paused';task['current_stage']='download'
+    for s in task['stages']:
+        if s['name']=='download':s['status']='succeeded'
+    assert worker.post(prefix+'/finish',json={'task':task}).json()['status']=='paused'
+    saved=database.get_task(task_id)
+    assert (Path(saved['session_path'])/'media/video_source.mp4').read_bytes()==b'video'
+    assert worker.post(prefix+'/heartbeat',json={}).status_code==409
+    assert browser.post(f'/api/tasks/{task_id}/continue').status_code==200
+    next_job=worker.post('/api/colab-worker/claim').json()['job']
+    assert next_job['task']['stages'][0]['status']=='succeeded'
+
+def test_expired_lease_preserves_checkpoint_and_rejects_late_worker(setup):
+    _,worker,_=setup
+    task_id=database.create_task('https://www.youtube.com/watch?v=abcdefghijk')
+    database.update_stage(task_id,'download',status='succeeded',progress=100)
+    job=worker.post('/api/colab-worker/claim').json()['job']
+    prefix=f"/api/colab-worker/{job['lease']}"
+    assert worker.post(prefix+'/heartbeat',json={'stage':'separate','progress':50}).status_code==200
+    with database.connect() as c:c.execute('UPDATE remote_leases SET expires=?',(time.time()-1,))
+    remote.expire()
+    task=database.get_task(task_id)
+    assert task['status']=='failed'
+    assert task['stages'][0]['status']=='succeeded'
+    assert worker.post(prefix+'/heartbeat',json={}).status_code==409
+
+@pytest.mark.parametrize('name',['../escape','session/../../escape','session/evil:stream','cookies/youtube.txt','session/CON.txt','session/../escape'])
+def test_archive_rejects_unsafe_and_cookie_paths(tmp_path,name):
+    archive=tmp_path/'in.zip'
+    with ZipFile(archive,'w') as z:z.writestr(name,'secret')
+    with pytest.raises(ValueError):unpack(archive,tmp_path/'out')
+
+def test_full_final_video_return_and_gui_download(setup):
+    browser,worker,root=setup
+    task_id=database.create_task('https://www.youtube.com/watch?v=abcdefghijk')
+    job=worker.post('/api/colab-worker/claim').json()['job'];token=job['lease']
+    session=root/'session';(session/'media').mkdir(parents=True)
+    (session/'media/video_final.mp4').write_bytes(b'final-video')
+    archive=root/'final.zip';pack(archive,{'session':session})
+    worker.put(f'/api/colab-worker/{token}/output',content=archive.read_bytes())
+    task=job['task'];task.update(status='succeeded',current_stage='done')
+    for s in task['stages']:s['status']='succeeded'
+    assert worker.post(f'/api/colab-worker/{token}/finish',json={'task':task}).status_code==200
+    response=browser.get(f'/api/tasks/{task_id}/artifact/final-video')
+    assert response.status_code==200 and response.content==b'final-video'

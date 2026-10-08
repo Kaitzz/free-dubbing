@@ -1,0 +1,9 @@
+# Preserve Colab's preinstalled CUDA PyTorch; no CUDA wheel replacement here.
+funasr==1.4.16
+modelscope
+huggingface_hub
+numpy
+soundfile
+pydub
+python-dotenv
+audioop-lts; python_version >= "3.13"

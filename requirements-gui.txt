@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+python-dotenv
+python-multipart
+pwdlib[argon2]>=0.3,<1
+openai
+httpx

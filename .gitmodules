@@ -1,0 +1,3 @@
+[submodule "submodule/demucs"]
+	path = submodule/demucs
+	url = https://github.com/facebookresearch/demucs.git

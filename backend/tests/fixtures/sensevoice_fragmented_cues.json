@@ -1,0 +1,117 @@
+[
+  {
+    "text": "like with other supervised machine learning",
+    "start_time": 2900,
+    "end_time": 5040
+  },
+  {
+    "text": "models",
+    "start_time": 5360,
+    "end_time": 5820
+  },
+  {
+    "text": "naive bayes has a set of parameters",
+    "start_time": 6080,
+    "end_time": 8040
+  },
+  {
+    "text": "that are estimated",
+    "start_time": 8300,
+    "end_time": 9360
+  },
+  {
+    "text": "from labeled training data",
+    "start_time": 9680,
+    "end_time": 11640
+  },
+  {
+    "text": "we ' ll see how we estimate the parameters of a naive bayes model",
+    "start_time": 11960,
+    "end_time": 15840
+  },
+  {
+    "text": "and what techniques we can do",
+    "start_time": 16040,
+    "end_time": 18360
+  },
+  {
+    "text": "to apply smoothing to our estimates in order to improve the accuracy of our classifier",
+    "start_time": 18560,
+    "end_time": 23760
+  },
+  {
+    "text": "we can estimate",
+    "start_time": 27980,
+    "end_time": 28920
+  },
+  {
+    "text": "the probabilities that we need for naive bays using simple",
+    "start_time": 29180,
+    "end_time": 33240
+  },
+  {
+    "text": "maximum likelihoodestimators",
+    "start_time": 33440,
+    "end_time": 35460
+  },
+  {
+    "text": "these just use the frequencies",
+    "start_time": 35960,
+    "end_time": 37620
+  },
+  {
+    "text": "of each class",
+    "start_time": 38000,
+    "end_time": 39120
+  },
+  {
+    "text": "and each associated",
+    "start_time": 39320,
+    "end_time": 40620
+  },
+  {
+    "text": "feature",
+    "start_time": 41000,
+    "end_time": 41460
+  },
+  {
+    "text": "with the supervised training data so we can get",
+    "start_time": 42920,
+    "end_time": 46200
+  },
+  {
+    "text": "we can get a maximum likelihood",
+    "start_time": 46580,
+    "end_time": 48300
+  },
+  {
+    "text": "of the",
+    "start_time": 48500,
+    "end_time": 49200
+  },
+  {
+    "text": "prior of each class by counting for each document",
+    "start_time": 50060,
+    "end_time": 53580
+  },
+  {
+    "text": "in our labeled document collection",
+    "start_time": 53780,
+    "end_time": 55680
+  },
+  {
+    "text": "how often",
+    "start_time": 56720,
+    "end_time": 57660
+  },
+  {
+    "text": "did we have the class label",
+    "start_time": 57930,
+    "end_time": 60070
+  },
+  {
+    "text": "that we ' re interested i",
+    "start_time": 60330,
+    "end_time": 61570
+  }
+]
