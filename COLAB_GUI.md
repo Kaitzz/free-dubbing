@@ -10,9 +10,9 @@
 
 ## Colab
 
-1. [在 Colab 打开 Notebook](https://colab.research.google.com/github/Kaitzz/free-dubbing/blob/main/notebooks/YouDub_GUI_Colab.ipynb)，选择 GPU 运行时。首个代码单元自动从 Kaitzz/free-dubbing 获取固定提交，无需下载或上传源码包。可以保存到 Drive 后重复使用。
+1. 首次将 data/gui/Dubbing_Launcher.ipynb 上传到 Colab 并保存为私有 Drive 副本。选择 GPU，运行全部单元。以后复用这一个启动壳，它自动获取 GitHub 最新工作 Notebook 和匹配源码。
 2. 安装与预检沿用已验证的配置。MiniMax 密钥通过 Colab Secrets 提供，不传输本机 API 密钥。
-3. 首次在本机 GUI 的「Colab 连接」生成连接密钥，保存到 Colab Secrets 的 DUBBING_WORKER_TOKEN 并开启 Notebook 访问权限。Notebook 自动读取密钥，固定地址 https://dubbing.corneliazhang.me 已内置；无需每次输入或重新生成密钥。若主动轮换密钥，再更新 Secret。
+3. 连接密码为固定 8 位数字，仅在本机 GUI 中主动保存新密码时才改变。私有启动壳的 DUBBING_PASSWORD 填相同值，无需 DUBBING_WORKER_TOKEN Secret。MiniMax API 仍使用 MINIMAX_API_KEY Secret。
 4. 运行领取任务单元，回到 GUI 创建任务、查看进度、继续/重做、播放/下载视频。
 
 用户已授权任务视频、阶段音频和字幕传入自己的 Colab并回传结果。不发送 Cookie、本机 API 密钥。
@@ -31,10 +31,9 @@ Colab 计算单元需保持运行。本机需保持联网；本实现不会规�
 
 原 GUI 的模型处理逻辑沿用已有适配器：SenseVoice、批量 MiniMax-M3、VoxCPM2 低内存初始化且关闭编译。
 
-## GitHub 源码版本
+## 稳定启动壳
 
-Notebook 当前固定 SOURCE_COMMIT=ff3ff39c3b7a3d48fbb15079a9f33ce095387801，与已推送的本机流水线匹配。打开链接从 main 获取 Notebook，但执行代码来自指定提交，不会自动升级。新运行时需重新获取源码和安装依赖；同一运行时复用检出的版本，版本之间共用 model-cache。之前 /content/youdub-pipeline/model-cache 存在时也会复用。下载模型仍可能在首次运行时发生。
-
-升级时先停止 worker，更新本机和 SOURCE_COMMIT 到相同的已验证版本，再重新运行安装及预检单元。固定 Tunnel 路由须在 Cloudflare 配置为 HTTP → 127.0.0.1:8011。仓库需要能被 Colab 读取；当前使用公开 HTTPS 读取，不需要 GitHub token，也不向 GitHub 上传任务素材。
-
-模型缓存通过 MODEL_CACHE_DIR 指向真实共享目录；不创建 model-cache 符号链接。此修复需要使用 SOURCE_COMMIT=ff3ff39c3b7a3d48fbb15079a9f33ce095387801 或更新的兼容版本，旧 Drive 副本不会自动更新。
+个人启动文件位于 data/gui/Dubbing_Launcher.ipynb（Git 忽略，含固定连接密码）。首次上传到 Colab 并保存为私有 Drive 副本，以后运行同一个副本即可。notebooks/Dubbing_Launcher.ipynb 是无密码的公开模板。
+启动壳先将 main 解析为提交 SHA，再获取该提交的工作 Notebook；工作 Notebook 同时检出这一提交的源码。DUBBING_VERSION 可设为完整 SHA 回退。运行中的任务不会热更新。
+私有启动壳只执行代码单元，输出包含工作单元编号与提交版本，错误立即停止。工作 Notebook 可以修改安装/预检/领取任务逻辑，无需更换私有壳。
+修改固定密码时，在 GUI 保存新值并同步私有壳的 DUBBING_PASSWORD。本地数据库只保存哈希，GUI 和 Tunnel 重启不轮换密码。连续认证失败会短暂限制重试。

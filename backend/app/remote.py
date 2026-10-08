@@ -8,7 +8,7 @@ import threading
 import time
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Body
 from fastapi.responses import FileResponse
 from . import config, database, runtime_security
 from .stages import STAGE_NAMES
@@ -30,10 +30,23 @@ def init():
 def storage():
     return runtime_security.ensure_private_directory(config.DATA_DIR/'remote')
 
+_failed_auth = []
+
+
 def authenticate(token):
-    expected = database.get_setting('remote.token_hash')
-    return enabled() and bool(expected) and secrets.compare_digest(
-        hashlib.sha256(token.encode()).hexdigest(), expected)
+    # Bound online guessing of the user-selected short password.
+    with lock:
+        now = time.monotonic()
+        _failed_auth[:] = [t for t in _failed_auth if now-t < 60]
+        if len(_failed_auth) >= 10:
+            return False
+        expected = database.get_setting('remote.token_hash')
+        accepted = enabled() and bool(expected) and secrets.compare_digest(
+            hashlib.sha256(token.encode()).hexdigest(), expected)
+        if not accepted:
+            _failed_auth.append(now)
+        return accepted
+
 
 def expire():
     init()
@@ -71,7 +84,7 @@ def status():
             'paired': bool(database.get_setting('remote.token_hash'))}
 
 @router.post('/api/remote/token')
-def new_token():
+def new_token(payload: dict | None = Body(default=None)):
     if not enabled():
         raise HTTPException(409, 'Start the server in Colab mode first')
     with lock:
@@ -79,7 +92,10 @@ def new_token():
         with database.connect() as c:
             if c.execute("SELECT 1 FROM remote_leases WHERE state='active'").fetchone():
                 raise HTTPException(409, 'Wait for the active stage before changing the worker key')
-        token = secrets.token_urlsafe(32)
+        token = payload.get('password') if isinstance(payload, dict) and 'password' in payload else secrets.token_urlsafe(32)
+        if isinstance(payload, dict) and 'password' in payload:
+            if not isinstance(token, str) or len(token) != 8 or not token.isascii() or not token.isdigit():
+                raise HTTPException(422, 'Connection password must be exactly 8 digits')
         database.set_setting('remote.token_hash', hashlib.sha256(token.encode()).hexdigest())
     return {'token':token}
 
@@ -215,7 +231,8 @@ async def finish(token: str, request: Request):
 
 @router.get('/api/remote/files/{kind}')
 def worker_files(kind: str):
-    paths={'notebook':config.REPO_ROOT/'notebooks/YouDub_GUI_Colab.ipynb',
+    private_launcher=config.DATA_DIR/'gui/Dubbing_Launcher.ipynb'
+    paths={'notebook':private_launcher if private_launcher.is_file() else config.REPO_ROOT/'notebooks/Dubbing_Launcher.ipynb',
            'bundle':config.REPO_ROOT/'youdub-colab-worker.zip'}
     path=paths.get(kind)
     if path is None or not path.is_file():raise HTTPException(404,'File not ready')

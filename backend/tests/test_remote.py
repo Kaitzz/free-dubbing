@@ -92,3 +92,28 @@ def test_full_final_video_return_and_gui_download(setup):
     assert worker.post(f'/api/colab-worker/{token}/finish',json={'task':task}).status_code==200
     response=browser.get(f'/api/tasks/{task_id}/artifact/final-video')
     assert response.status_code==200 and response.content==b'final-video'
+
+
+def test_custom_password_persists_and_rejects_invalid_values(setup):
+    browser, _, _ = setup
+    remote._failed_auth.clear()
+    for invalid in ('1234567', '123456789', 'abcdefgh', 12345678):
+        assert browser.post('/api/remote/token', json={'password':invalid}).status_code == 422
+    assert browser.post('/api/remote/token', json={'password':'01234567'}).status_code == 200
+    remote.init()
+    assert remote.authenticate('01234567')
+    assert not remote.authenticate('76543210')
+    remote._failed_auth.clear()
+
+
+def test_short_password_guessing_is_limited(setup):
+    browser, _, _ = setup
+    remote._failed_auth.clear()
+    browser.post('/api/remote/token', json={'password':'01234567'})
+    try:
+        for _ in range(10): assert not remote.authenticate('incorrect')
+        assert not remote.authenticate('01234567')
+        remote._failed_auth[:] = [time.monotonic()-61]
+        assert remote.authenticate('01234567')
+    finally:
+        remote._failed_auth.clear()

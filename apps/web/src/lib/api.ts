@@ -370,4 +370,4 @@ export function finalVideoDownloadUrl(taskId: string) {
 
 export type ColabStatus = { tunnel_url?: string; enabled: boolean; connected: boolean; paired: boolean }
 export function getColabStatus() { return request<ColabStatus>("/api/remote/status") }
-export function createColabToken() { return request<{token: string}>("/api/remote/token", {method:"POST"}) }
+export function createColabToken(password: string) { return request<{token: string}>("/api/remote/token", {method:"POST", body: JSON.stringify({password})}) }

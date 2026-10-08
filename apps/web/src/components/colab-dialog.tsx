@@ -9,6 +9,7 @@ export function ColabDialog() {
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<ColabStatus | null>(null)
   const [token, setToken] = useState("")
+  const [password, setPassword] = useState("")
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
   useEffect(() => {
@@ -24,7 +25,7 @@ export function ColabDialog() {
   }, [open])
   async function pair() {
     setBusy(true); setError("")
-    try { setToken((await createColabToken()).token) }
+    try { setToken((await createColabToken(password)).token) }
     catch (e) { setError(e instanceof Error ? e.message : "生成密钥失败") }
     finally { setBusy(false) }
   }
@@ -34,16 +35,18 @@ export function ColabDialog() {
       <DialogHeader><DialogTitle>连接 Google Colab</DialogTitle></DialogHeader>
       <p>{status ? !status.enabled ? "当前为本机执行模式，请使用 Colab GUI 启动脚本。" : status.connected ? "Colab 已连接，可以创建任务。" : "等待 Colab 连接；新任务会排队。" : "正在读取状态…"}</p>
       {status?.tunnel_url ? <><label htmlFor="colab-url" className="text-sm">本次连接地址</label><input id="colab-url" readOnly value={status.tunnel_url} className="w-full rounded border p-2 text-xs" onFocus={e => e.target.select()} /></> : null}
-      <div className="flex gap-4 text-sm underline"><a href="https://colab.research.google.com/github/Kaitzz/free-dubbing/blob/main/notebooks/YouDub_GUI_Colab.ipynb" target="_blank" rel="noopener noreferrer">在 Colab 打开</a><a href="/api/remote/files/notebook">下载 Notebook（备用）</a></div>
+      <div className="flex gap-4 text-sm underline"><a href="https://colab.research.google.com/github/Kaitzz/free-dubbing/blob/main/notebooks/Dubbing_Launcher.ipynb" target="_blank" rel="noopener noreferrer">打开启动壳模板</a><a href="/api/remote/files/notebook">下载私有启动 Notebook</a></div>
       <ol className="list-decimal space-y-2 pl-5 text-sm">
         <li>在 Colab 打开 Notebook，选择 GPU 运行时；源码会自动从 GitHub 下载，无需上传源码包。</li>
         <li>使用本机启动脚本提供的 HTTPS Tunnel 地址。</li>
-        <li>在下方生成专用连接密钥，填入 Colab worker notebook。</li>
+        <li>使用私有启动 Notebook 中的固定 8 位密码；重启不会更换。仅在需要改密码时使用下方设置，并同步修改私有 Notebook。</li>
         <li>运行 Colab 的领取任务单元，然后回到这里上传视频。</li>
       </ol>
       <p className="text-sm text-muted-foreground">任务视频、音频和字幕会传到你的 Colab，阶段结果会传回本机。Cookie 和本机 API 密钥不传输；MiniMax 密钥在 Colab Secrets 中配置。需要 Cookie 的视频请先下载，再上传本地文件。</p>
-      <Button onClick={() => void pair()} disabled={busy || !status?.enabled}>{busy ? "正在生成…" : status?.paired ? "生成新连接密钥（旧密钥失效）" : "生成连接密钥"}</Button>
-      {token ? <><label htmlFor="colab-token" className="text-sm">仅本次显示，请复制到 Colab</label><input id="colab-token" readOnly value={token} className="w-full rounded border p-2 font-mono text-xs" onFocus={e => e.target.select()} /></> : null}
+      <label htmlFor="connection-password" className="text-sm">设置固定连接密码（8 位数字）</label>
+      <input id="connection-password" type="password" inputMode="numeric" maxLength={8} value={password} onChange={e => setPassword(e.target.value)} className="rounded border p-2" autoComplete="new-password" />
+      <Button onClick={() => void pair()} disabled={busy || !status?.enabled || !/^[0-9]{8}$/.test(password)}>{busy ? "正在保存…" : "保存固定密码"}</Button>
+      {token ? <><label htmlFor="colab-token" className="text-sm">已保存，重启后保持不变；请同步到私有启动 Notebook</label><input id="colab-token" readOnly value={token} className="w-full rounded border p-2 font-mono text-xs" onFocus={e => e.target.select()} /></> : null}
       {error ? <p role="alert" className="text-sm text-red-600">{error}</p> : null}
     </DialogContent>
   </Dialog>
