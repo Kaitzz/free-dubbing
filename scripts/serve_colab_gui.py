@@ -1,4 +1,4 @@
-"""Start local GUI + restricted worker gateway + temporary Cloudflare Tunnel."""
+"""Start local GUI + restricted worker gateway + fixed or temporary Cloudflare Tunnel."""
 import hashlib
 import json
 import os
@@ -46,6 +46,18 @@ def wait_http(url,process):
         except Exception:time.sleep(1)
     raise RuntimeError('Service startup timed out')
 
+def tunnel_configuration(executable, env, run_dir=RUN):
+    token_file = run_dir/'cloudflare-token.txt'
+    if token_file.is_file():
+        url = env.get('YOUDUB_TUNNEL_URL', 'https://dubbing.corneliazhang.me').strip().rstrip('/')
+        from urllib.parse import urlsplit
+        parsed = urlsplit(url)
+        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+            raise ValueError('YOUDUB_TUNNEL_URL must be an HTTPS origin')
+        return [str(executable), 'tunnel', '--no-autoupdate', 'run', '--token-file', str(token_file)], url
+    return [str(executable), 'tunnel', '--url', 'http://127.0.0.1:8011', '--no-autoupdate'], None
+
+
 def main():
     for port in (3000,8000,8011):
         with socket.socket() as s:s.bind(('127.0.0.1',port))
@@ -63,15 +75,23 @@ def main():
         if not node:raise RuntimeError('Node.js is required')
         front=launch([node,'node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port','3000'],'frontend',env,ROOT/'apps/web')
         wait_http('http://127.0.0.1:3000',front)
-        tunnel=launch([str(cloudflared),'tunnel','--url','http://127.0.0.1:8011','--no-autoupdate'],'tunnel',env)
+        tunnel_command, fixed_url = tunnel_configuration(cloudflared, env)
+        tunnel_env=env.copy()
+        # Never let an inherited token override the explicitly configured file.
+        tunnel_env.pop('TUNNEL_TOKEN', None)
+        tunnel_env.pop('TUNNEL_TOKEN_FILE', None)
+        tunnel=launch(tunnel_command,'tunnel',tunnel_env)
         for _ in range(90):
             text=(RUN/'tunnel.log').read_text(encoding='utf-8',errors='replace')
             match=re.search(r'https://[a-z0-9-]+\.trycloudflare\.com',text)
-            if match:break
             if tunnel.poll() is not None:raise RuntimeError('Tunnel exited; inspect tunnel.log')
+            if fixed_url and 'Registered tunnel connection' in text:
+                tunnel_url=fixed_url;break
+            if not fixed_url and match:
+                tunnel_url=match.group();break
             time.sleep(1)
-        else:raise RuntimeError('Tunnel URL unavailable')
-        info={'gui':'http://127.0.0.1:3000','tunnel':match.group()}
+        else:raise RuntimeError('Tunnel connection timed out; inspect tunnel.log')
+        info={'gui':'http://127.0.0.1:3000','tunnel':tunnel_url}
         (RUN/'connection.json').write_text(json.dumps(info,indent=2),encoding='utf-8')
         print(json.dumps(info),flush=True)
         while all(p.poll() is None for p in children):time.sleep(2)

@@ -3,10 +3,10 @@
 ## 本机
 
 运行 `powershell -ExecutionPolicy Bypass -File scripts/start_colab_gui.ps1`。
-它会启动 127.0.0.1:3000 的原 GUI、8000 后端、8011 专用网关，以及临时 Cloudflare Tunnel。
+它会启动 127.0.0.1:3000 的原 GUI、8000 后端、8011 专用网关，以及 Cloudflare Tunnel。
 仅 `/api/colab-worker/*` 通过网关暴露，所有操作需要 GUI 生成的专用 Bearer 密钥。
-临时地址在 `data/gui/connection.json`。本机 GUI 直接打开，无需登录密码；启动脚本启用 YOUDUB_LOCAL_GUI=true，后台保留本机来源检查和自动 CSRF 保护。公网 worker 仍使用独立连接密钥。
-关闭启动进程会关闭它启动的服务。日志在 data/gui。临时 Tunnel 地址下次启动会改变。
+连接地址在 `data/gui/connection.json`。本机 GUI 直接打开，无需登录密码；启动脚本启用 YOUDUB_LOCAL_GUI=true，后台保留本机来源检查和自动 CSRF 保护。公网 worker 仍使用独立连接密钥。
+关闭启动进程会关闭它启动的服务。日志在 data/gui。存在 data/gui/cloudflare-token.txt 时使用固定 Tunnel，默认地址 https://dubbing.corneliazhang.me，可用 YOUDUB_TUNNEL_URL 覆盖。token 文件只保存在本机，不提交 Git。首次迁移时关闭之前单独启动的 cloudflared 窗口，随后只运行 GUI 启动脚本。没有 token 文件时才回退到临时 Tunnel，地址会随重启改变。
 
 ## Colab
 
@@ -35,4 +35,4 @@ Colab 计算单元需保持运行。本机需保持联网；本实现不会规�
 
 Notebook 当前固定 SOURCE_COMMIT=b8a3611a0fa815429f5cf353c9ebf34cd018377b，与已推送的本机流水线匹配。打开链接从 main 获取 Notebook，但执行代码来自指定提交，不会自动升级。新运行时需重新获取源码和安装依赖；同一运行时复用检出的版本，版本之间共用 model-cache。之前 /content/youdub-pipeline/model-cache 存在时也会复用。下载模型仍可能在首次运行时发生。
 
-升级时先停止 worker，更新本机和 SOURCE_COMMIT 到相同的已验证版本，再重新运行安装及预检单元。域名激活之前继续使用临时 Tunnel。仓库需要能被 Colab 读取；当前使用公开 HTTPS 读取，不需要 GitHub token，也不向 GitHub 上传任务素材。
+升级时先停止 worker，更新本机和 SOURCE_COMMIT 到相同的已验证版本，再重新运行安装及预检单元。固定 Tunnel 路由须在 Cloudflare 配置为 HTTP → 127.0.0.1:8011。仓库需要能被 Colab 读取；当前使用公开 HTTPS 读取，不需要 GitHub token，也不向 GitHub 上传任务素材。
