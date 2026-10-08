@@ -37,3 +37,9 @@ Colab 计算单元需保持运行。本机需保持联网；本实现不会规�
 启动壳先将 main 解析为提交 SHA，再获取该提交的工作 Notebook；工作 Notebook 同时检出这一提交的源码。DUBBING_VERSION 可设为完整 SHA 回退。运行中的任务不会热更新。
 私有启动壳只执行代码单元，输出包含工作单元编号与提交版本，错误立即停止。工作 Notebook 可以修改安装/预检/领取任务逻辑，无需更换私有壳。
 修改固定密码时，在 GUI 保存新值并同步私有壳的 DUBBING_PASSWORD。本地数据库只保存哈希，GUI 和 Tunnel 重启不轮换密码。连续认证失败会短暂限制重试。
+
+## YouTube Cookie（Colab 专用）
+
+启动壳可从 Colab Secrets 的 YOUTUBE_COOKIES 读取完整 Netscape cookies.txt 内容（非 API token、非 Cookie 请求头）。需开启 Notebook access。没有此 Secret 时继续匿名下载，本地视频不受影响；已有 Secret 但未授权时会提示开启权限。旧启动壳也可由更新后的工作 Notebook 读取。
+
+只有 YouTube 任务会将 Cookie 写入其 Colab data/cookies/youtube.txt，文件权限私有，子进程不继承 Cookie 内容环境变量。文件位于 session 检查点以外，阶段结束删除，不上传 GitHub、不回传本机，也不读取本机浏览器 Cookie。非 YouTube 域的条目会过滤。Cookie 可能过期，也不保证能通过 YouTube 的机器人检查。

@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 import httpx
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from backend.app.remote_archive import unpack, pack
+from backend.app.youtube import is_youtube_url
+from scripts.colab_credentials import write_youtube_cookie
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -64,6 +66,7 @@ def run_job(client, job):
                     lost.set();return # Lease expiry prevents a late worker from committing results.
     thread=threading.Thread(target=heartbeat,daemon=True);thread.start()
     process=None
+    cookie_file=None
     try:
         with client.stream('GET',prefix+'/input') as response:
             response.raise_for_status()
@@ -85,6 +88,10 @@ def run_job(client, job):
             OPENAI_API_KEY=os.environ['OPENAI_API_KEY'],OPENAI_BASE_URL=settings['base_url'],
             OPENAI_MODEL=settings['model'],OPENAI_TRANSLATE_CONCURRENCY=settings['translate_concurrency'] or '2')
         env.pop('YOUDUB_WORKER_TOKEN',None)
+        cookie_value=env.pop('YOUTUBE_COOKIES','')
+        if is_youtube_url(original['url']):
+            cookie_file=write_youtube_cookie(cookie_value,folder/'data')
+        del cookie_value
         if lost.is_set():raise RuntimeError('Lease lost during input transfer')
         print(f"Task {original['id']}: running next stage",flush=True)
         process=subprocess.Popen([sys.executable,'-u',str(ROOT/'scripts/remote_job.py'),str(folder)],
@@ -119,6 +126,7 @@ def run_job(client, job):
             process.terminate()
             try:process.wait(timeout=20)
             except subprocess.TimeoutExpired:process.kill();process.wait()
+        if cookie_file is not None:cookie_file.unlink(missing_ok=True)
         stopped.set();thread.join(timeout=35)
 
 def main():

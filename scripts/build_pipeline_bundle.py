@@ -6,7 +6,7 @@ def build(root, target):
     paths = sorted((root / 'backend/app').rglob('*.py'))
     paths += [root / name for name in (
         'requirements.txt', 'requirements-stt.txt', 'requirements-colab.txt',
-        'scripts/colab_worker.py', 'scripts/remote_job.py', 'notebooks/YouDub_GUI_Colab.ipynb',
+        'scripts/colab_worker.py', 'scripts/colab_credentials.py', 'scripts/remote_job.py', 'notebooks/YouDub_GUI_Colab.ipynb',
         'scripts/colab_pipeline.py', 'scripts/colab_preflight.py', 'scripts/colab_environment.py', 'scripts/run_colab_task_cell.py',
         'notebooks/YouDub_Pipeline_Colab.ipynb', 'COLAB_PIPELINE.md', 'LICENSE',
     )]
