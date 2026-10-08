@@ -5,7 +5,7 @@
 运行 `powershell -ExecutionPolicy Bypass -File scripts/start_colab_gui.ps1`。
 它会启动 127.0.0.1:3000 的原 GUI、8000 后端、8011 专用网关，以及临时 Cloudflare Tunnel。
 仅 `/api/colab-worker/*` 通过网关暴露，所有操作需要 GUI 生成的专用 Bearer 密钥。
-临时地址在 `data/gui/connection.json`；首次未配置密码时，登录密码在 `data/gui/login-password.txt`。
+临时地址在 `data/gui/connection.json`。本机 GUI 直接打开，无需登录密码；启动脚本启用 YOUDUB_LOCAL_GUI=true，后台保留本机来源检查和自动 CSRF 保护。公网 worker 仍使用独立连接密钥。
 关闭启动进程会关闭它启动的服务。日志在 data/gui。临时 Tunnel 地址下次启动会改变。
 
 ## Colab

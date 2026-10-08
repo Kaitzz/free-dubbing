@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import re
-import secrets
 import shutil
 import socket
 import subprocess
@@ -13,7 +12,6 @@ import time
 import urllib.request
 
 from dotenv import dotenv_values
-from pwdlib import PasswordHash
 
 ROOT=Path(__file__).resolve().parents[1]
 RUN=ROOT/'data/gui'
@@ -55,19 +53,16 @@ def main():
     env.update({k:v for k,v in dotenv_values(ROOT/'.env').items() if v is not None})
     env.update(YOUDUB_EXECUTION_BACKEND='colab',DEVICE='cpu',YOUDUB_AUTH_COOKIE_SECURE='false',
                YOUDUB_AUTH_COOKIE_SAMESITE='lax',NEXT_SERVER_API_BASE_URL='http://127.0.0.1:8000')
-    if not env.get('YOUDUB_AUTH_PASSWORD_HASH'):
-        password_path=RUN/'login-password.txt'
-        if not password_path.exists():password_path.write_text(secrets.token_urlsafe(18),encoding='utf-8')
-        env['YOUDUB_AUTH_PASSWORD_HASH']=PasswordHash.recommended().hash(password_path.read_text(encoding='utf-8').strip())
+    env['YOUDUB_LOCAL_GUI']='true'
     cloudflared=install_tunnel()
     try:
-        api=launch([sys.executable,'-m','uvicorn','backend.app.main:app','--host','127.0.0.1','--port','8000'],'backend',env)
+        api=launch([sys.executable,'-m','uvicorn','backend.app.main:app','--host','127.0.0.1','--port','8000','--no-proxy-headers'],'backend',env)
         wait_http('http://127.0.0.1:8000/api/health',api)
         gateway=launch([sys.executable,'-m','uvicorn','scripts.worker_gateway:app','--host','127.0.0.1','--port','8011'],'gateway',env)
         node=shutil.which('node')
         if not node:raise RuntimeError('Node.js is required')
         front=launch([node,'node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port','3000'],'frontend',env,ROOT/'apps/web')
-        wait_http('http://127.0.0.1:3000/login',front)
+        wait_http('http://127.0.0.1:3000',front)
         tunnel=launch([str(cloudflared),'tunnel','--url','http://127.0.0.1:8011','--no-autoupdate'],'tunnel',env)
         for _ in range(90):
             text=(RUN/'tunnel.log').read_text(encoding='utf-8',errors='replace')
@@ -76,7 +71,7 @@ def main():
             if tunnel.poll() is not None:raise RuntimeError('Tunnel exited; inspect tunnel.log')
             time.sleep(1)
         else:raise RuntimeError('Tunnel URL unavailable')
-        info={'gui':'http://127.0.0.1:3000','tunnel':match.group(),'password_file':str(RUN/'login-password.txt')}
+        info={'gui':'http://127.0.0.1:3000','tunnel':match.group()}
         (RUN/'connection.json').write_text(json.dumps(info,indent=2),encoding='utf-8')
         print(json.dumps(info),flush=True)
         while all(p.poll() is None for p in children):time.sleep(2)

@@ -259,6 +259,30 @@ def _json_error(status_code: int, detail: str) -> JSONResponse:
     )
 
 
+_LOCAL_CSRF_TOKEN = secrets.token_urlsafe(32)
+
+
+def local_gui_enabled() -> bool:
+    return os.getenv("YOUDUB_LOCAL_GUI", "").lower() == "true"
+
+
+def local_request_allowed(request: Request) -> bool:
+    # Validate the socket peer and Host, not client-supplied forwarding headers.
+    if not request.client or request.client.host not in {"127.0.0.1", "::1"}:
+        return False
+    if request.url.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return False
+    if request.headers.get("authorization"):
+        return False
+    origin = request.headers.get("origin")
+    if origin and origin not in {
+        "http://127.0.0.1:3000", "http://localhost:3000",
+        "http://127.0.0.1:8000", "http://localhost:8000",
+    }:
+        return False
+    return request.headers.get("sec-fetch-site", "").lower() != "cross-site"
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     def __init__(
         self,
@@ -299,6 +323,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await self._call_next_no_store(request, call_next)
 
         if method == "OPTIONS" or not _protected_path(path):
+            return await self._call_next_no_store(request, call_next)
+
+        if local_gui_enabled():
+            if not local_request_allowed(request):
+                return _json_error(403, "Local GUI access only.")
+            if path in {"/api/auth/login", "/api/auth/logout"}:
+                return _json_error(404, "Password login is not used by the local GUI.")
+            if method not in SAFE_METHODS and not secrets.compare_digest(
+                request.headers.get(CSRF_HEADER_NAME, ""), _LOCAL_CSRF_TOKEN
+            ):
+                return _json_error(403, "CSRF validation failed.")
+            request.state.auth_session = AuthenticatedSession(
+                token_hash="local", csrf_token=_LOCAL_CSRF_TOKEN,
+                expires_at=_iso(_utc_now() + timedelta(days=1)),
+            )
             return await self._call_next_no_store(request, call_next)
 
         if (method, path) == ("POST", "/api/auth/login"):

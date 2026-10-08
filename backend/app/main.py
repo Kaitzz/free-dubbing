@@ -124,7 +124,8 @@ def normalize_translate_concurrency(value: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_runtime_dirs()
-    auth.validate_auth_configuration()
+    if not auth.local_gui_enabled():
+        auth.validate_auth_configuration()
     database.init_db()
     remote.init()
     database.delete_expired_auth_sessions(database.now_iso())

@@ -167,28 +167,6 @@ export async function getAuthSession() {
   return session
 }
 
-export async function login(password: string) {
-  csrfToken = ""
-  const session = await request<AuthSession>(
-    "/api/auth/login",
-    {
-      method: "POST",
-      body: JSON.stringify({ password }),
-    },
-    { emitUnauthorized: false },
-  )
-  csrfToken = session.csrf_token
-  return session
-}
-
-export async function logout() {
-  try {
-    await request<void>("/api/auth/logout", { method: "POST" })
-  } finally {
-    csrfToken = ""
-  }
-}
-
 export type TaskSummary = {
   id: string
   url: string
