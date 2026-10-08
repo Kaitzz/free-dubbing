@@ -12,7 +12,7 @@
 
 1. [在 Colab 打开 Notebook](https://colab.research.google.com/github/Kaitzz/free-dubbing/blob/main/notebooks/YouDub_GUI_Colab.ipynb)，选择 GPU 运行时。首个代码单元自动从 Kaitzz/free-dubbing 获取固定提交，无需下载或上传源码包。可以保存到 Drive 后重复使用。
 2. 安装与预检沿用已验证的配置。MiniMax 密钥通过 Colab Secrets 提供，不传输本机 API 密钥。
-3. 在本机 GUI 的「Colab 连接」生成连接密钥；把它和 Tunnel HTTPS 地址填进 Colab。
+3. 首次在本机 GUI 的「Colab 连接」生成连接密钥，保存到 Colab Secrets 的 DUBBING_WORKER_TOKEN 并开启 Notebook 访问权限。Notebook 自动读取密钥，固定地址 https://dubbing.corneliazhang.me 已内置；无需每次输入或重新生成密钥。若主动轮换密钥，再更新 Secret。
 4. 运行领取任务单元，回到 GUI 创建任务、查看进度、继续/重做、播放/下载视频。
 
 用户已授权任务视频、阶段音频和字幕传入自己的 Colab并回传结果。不发送 Cookie、本机 API 密钥。
