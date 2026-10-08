@@ -18,6 +18,11 @@ from backend.app.remote_archive import unpack, pack
 
 ROOT=Path(__file__).resolve().parents[1]
 
+def model_cache_path():
+    # Resolve the intentionally shared cache before the runtime checks its root.
+    return str(Path(os.environ.get('MODEL_CACHE_DIR', str(ROOT/'model-cache'))).expanduser().resolve())
+
+
 def snapshot(job_dir, original, exitcode=None):
     path=job_dir/'data/youdub.sqlite'
     if not path.exists():
@@ -74,7 +79,7 @@ def run_job(client, job):
         settings=job['settings']
         env=os.environ.copy()
         env.update(YOUDUB_DATA_DIR=str(folder/'data'),WORKFOLDER=str(work),
-            YOUDUB_EXECUTION_BACKEND='local',MODEL_CACHE_DIR=str(ROOT/'model-cache'),
+            YOUDUB_EXECUTION_BACKEND='local',MODEL_CACHE_DIR=model_cache_path(),
             DEVICE='cuda',FUNASR_DEVICE='cuda:0',DEMUCS_DEVICE='cuda',DEMUCS_CHUNK_SECONDS='60',
             VOXCPM_LOW_MEMORY_INIT='true',VOXCPM_OPTIMIZE='false',VOXCPM_LOAD_DENOISER='false',
             OPENAI_API_KEY=os.environ['OPENAI_API_KEY'],OPENAI_BASE_URL=settings['base_url'],
