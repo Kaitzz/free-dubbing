@@ -15,8 +15,8 @@
 3. 连接密码为固定 8 位数字，仅在本机 GUI 中主动保存新密码时才改变。私有启动壳的 DUBBING_PASSWORD 填相同值，无需 DUBBING_WORKER_TOKEN Secret。MiniMax API 仍使用 MINIMAX_API_KEY Secret。
 4. 运行领取任务单元，回到 GUI 创建任务、查看进度、继续/重做、播放/下载视频。
 
-用户已授权任务视频、阶段音频和字幕传入自己的 Colab并回传结果。不发送 Cookie、本机 API 密钥。
-需要 Cookie 的网页视频建议先下载成文件再上传；公开链接由 Colab 下载，不能使用本机代理端口。
+用户已授权任务视频、阶段音频和字幕传入自己的 Colab并回传结果。仅 YouTube 下载阶段会发送 GUI 保存的 YouTube Cookie；本机 API 密钥不传输。
+YouTube 视频由 Colab 下载，Cookie 在 GUI 设置中粘贴更新即可；不能使用本机代理端口。
 GUI 中翻译地址/模型/并发会传给 worker；GUI 密钥只用于本机功能，worker 使用自己的 Colab Secret。
 
 ## 运行机制与边界
@@ -43,3 +43,7 @@ Colab 计算单元需保持运行。本机需保持联网；本实现不会规�
 启动壳可从 Colab Secrets 的 YOUTUBE_COOKIES 读取完整 Netscape cookies.txt 内容（非 API token、非 Cookie 请求头）。需开启 Notebook access。没有此 Secret 时继续匿名下载，本地视频不受影响；已有 Secret 但未授权时会提示开启权限。旧启动壳也可由更新后的工作 Notebook 读取。
 
 只有 YouTube 任务会将 Cookie 写入其 Colab data/cookies/youtube.txt，文件权限私有，子进程不继承 Cookie 内容环境变量。文件位于 session 检查点以外，阶段结束删除，不上传 GitHub、不回传本机，也不读取本机浏览器 Cookie。非 YouTube 域的条目会过滤。Cookie 可能过期，也不保证能通过 YouTube 的机器人检查。
+
+## 在 GUI 更新 Chrome Cookie
+
+使用 yt-dlp FAQ 链接的 Get cookies.txt LOCALLY 扩展导出 youtube.com 的 Netscape 格式内容，粘贴到 GUI 设置的 YouTube Cookie 并保存。每次领取 YouTube 下载阶段时，Colab 获得最新 Cookie（优先于 Secret）；不会进入任务 ZIP 或回传结果，其他域条目过滤。过期后只需在 GUI 更新并恢复失败任务，无需重启 Colab。此前用户选择不传本机 Cookie，现已明确改为允许 GUI 管理并传至 Colab。视频仍完全由 Colab 下载。

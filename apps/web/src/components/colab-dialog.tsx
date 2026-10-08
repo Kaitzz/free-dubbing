@@ -42,7 +42,7 @@ export function ColabDialog() {
         <li>使用私有启动 Notebook 中的固定 8 位密码；重启不会更换。仅在需要改密码时使用下方设置，并同步修改私有 Notebook。</li>
         <li>运行 Colab 的领取任务单元，然后回到这里上传视频。</li>
       </ol>
-      <p className="text-sm text-muted-foreground">任务视频、音频和字幕会传到你的 Colab，阶段结果会传回本机。Cookie 和本机 API 密钥不传输；MiniMax 密钥在 Colab Secrets 中配置。需要 Cookie 的视频请先下载，再上传本地文件。</p>
+      <p className="text-sm text-muted-foreground">任务视频、音频和字幕会传到你的 Colab，阶段结果会传回本机。设置中保存的 YouTube Cookie 仅传给 Colab 的 YouTube 下载阶段；本机 API 密钥不传输，MiniMax 密钥在 Colab Secrets 中配置。</p>
       <label htmlFor="connection-password" className="text-sm">设置固定连接密码（8 位数字）</label>
       <input id="connection-password" type="password" inputMode="numeric" maxLength={8} value={password} onChange={e => setPassword(e.target.value)} className="rounded border p-2" autoComplete="new-password" />
       <Button onClick={() => void pair()} disabled={busy || !status?.enabled || !/^[0-9]{8}$/.test(password)}>{busy ? "正在保存…" : "保存固定密码"}</Button>

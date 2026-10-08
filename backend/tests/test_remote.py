@@ -117,3 +117,22 @@ def test_short_password_guessing_is_limited(setup):
         assert remote.authenticate('01234567')
     finally:
         remote._failed_auth.clear()
+
+
+@pytest.mark.parametrize('download_done', [False, True])
+def test_gui_cookie_only_sent_for_youtube_download(setup,monkeypatch,download_done):
+    browser,worker,root=setup
+    cookie=root/'youtube-cookie.txt'
+    cookie.write_text('# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tgui-cookie-value\n.example.com\tTRUE\t/\tTRUE\t2147483647\tOTHER\tnot-for-colab\n')
+    monkeypatch.setattr(config,'YOUTUBE_COOKIE_PATH',cookie)
+    task_id=database.create_task('https://www.youtube.com/watch?v=abcdefghijk')
+    if download_done: database.update_stage(task_id,'download',status='succeeded')
+    job=worker.post('/api/colab-worker/claim').json()['job']
+    assert ('youtube_cookies' in job) is not download_done
+    if not download_done:
+        assert 'gui-cookie-value' in job['youtube_cookies']
+        assert 'not-for-colab' not in job['youtube_cookies']
+    assert 'gui-cookie-value' not in json.dumps(database.get_task(task_id))
+    data=worker.get('/api/colab-worker/'+job['lease']+'/input').content
+    with ZipFile(io.BytesIO(data)) as z:
+        assert all(b'gui-cookie-value' not in z.read(n) for n in z.namelist())

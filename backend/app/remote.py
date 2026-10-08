@@ -117,6 +117,22 @@ def claim():
                       (database.now_iso(), task_id))
         task = database.get_task(task_id)
         stage = next((s['name'] for s in task['stages'] if s['status'] not in {'succeeded','skipped'}), 'merge_video')
+        cookie_settings = {}
+        if stage == 'download':
+            from .youtube import is_youtube_url
+            if is_youtube_url(task['url']):
+                from scripts.colab_credentials import youtube_cookie_text
+                cookie_path = config.YOUTUBE_COOKIE_PATH
+                metadata = runtime_security.private_file_stat(cookie_path)
+                if metadata and metadata.st_size:
+                    if metadata.st_size > 1024*1024:
+                        database.update_task(task_id,status='failed',error_message='YouTube Cookie exceeds 1 MiB')
+                        raise HTTPException(422,'YouTube Cookie exceeds 1 MiB')
+                    try:
+                        cookie_settings['youtube_cookies'] = youtube_cookie_text(cookie_path.read_text(encoding='utf-8'))
+                    except ValueError:
+                        database.update_task(task_id,status='failed',error_message='Update the YouTube Cookie in GUI settings (Netscape format)')
+                        raise HTTPException(422,'Update the YouTube Cookie in GUI settings (Netscape format)') from None
         token = uuid4().hex
         try:
             folder = runtime_security.ensure_private_directory(storage()/token)
@@ -131,9 +147,11 @@ def claim():
         except Exception:
             database.update_task(task_id, status='failed', error_message='Could not prepare Colab input archive')
             raise
-        # Credentials stay local; Colab provides its own translation API key.
+        # Only download jobs receive the latest GUI cookie, never translation keys.
         settings=database.get_openai_settings()
-        return {'job':{'lease':token, 'task':task, 'settings':{k:v for k,v in settings.items() if k!='api_key'}}}
+        return {'job':{'lease':token, 'task':task, 'settings':{k:v for k,v in settings.items() if k!='api_key'},
+                       **cookie_settings}}
+
 
 @router.get('/api/colab-worker/{token}/input')
 def download_input(token: str):

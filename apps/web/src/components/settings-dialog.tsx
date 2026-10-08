@@ -290,6 +290,7 @@ export function SettingsDialog() {
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="cookie">{t.settings.cookie}</Label>
+                <p className="text-sm text-muted-foreground">从 Chrome 扩展 Get cookies.txt LOCALLY 导出 YouTube 的 Netscape 格式内容，在这里粘贴保存。Colab 下载阶段会自动使用最新值；过期后在此更新，无需修改 Notebook。</p>
                 <Textarea
                   id="cookie"
                   value={cookieValue}

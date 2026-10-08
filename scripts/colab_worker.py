@@ -88,7 +88,8 @@ def run_job(client, job):
             OPENAI_API_KEY=os.environ['OPENAI_API_KEY'],OPENAI_BASE_URL=settings['base_url'],
             OPENAI_MODEL=settings['model'],OPENAI_TRANSLATE_CONCURRENCY=settings['translate_concurrency'] or '2')
         env.pop('YOUDUB_WORKER_TOKEN',None)
-        cookie_value=env.pop('YOUTUBE_COOKIES','')
+        cookie_value=job.get('youtube_cookies') or env.pop('YOUTUBE_COOKIES','')
+        env.pop('YOUTUBE_COOKIES',None)
         if is_youtube_url(original['url']):
             cookie_file=write_youtube_cookie(cookie_value,folder/'data')
         del cookie_value

@@ -3,9 +3,9 @@ from pathlib import Path
 from backend.app import runtime_security
 
 
-def write_youtube_cookie(value: str, data_dir: Path) -> Path | None:
+def youtube_cookie_text(value: str) -> str:
     if not value or not value.strip():
-        return None
+        return ""
     error = 'YOUTUBE_COOKIES must contain Netscape cookies.txt content exported for YouTube'
     if len(value) > 1024*1024:
         raise ValueError(error)
@@ -29,7 +29,14 @@ def write_youtube_cookie(value: str, data_dir: Path) -> Path | None:
             records.append(line)
     if not records:
         raise ValueError(error)
+    return '# Netscape HTTP Cookie File\n'+'\n'.join(records)+'\n'
+
+
+def write_youtube_cookie(value: str, data_dir: Path) -> Path | None:
+    text = youtube_cookie_text(value)
+    if not text:
+        return None
     target = data_dir/'cookies/youtube.txt'
     runtime_security.ensure_private_directory(target.parent)
-    runtime_security.atomic_write_private_text(target, '# Netscape HTTP Cookie File\n'+'\n'.join(records)+'\n')
+    runtime_security.atomic_write_private_text(target, text)
     return target
