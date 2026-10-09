@@ -5,6 +5,9 @@ import json
 import os
 import re
 import shutil
+import time
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
@@ -46,19 +49,41 @@ def _model_path() -> Path:
     return Path(downloaded)
 
 
+@contextmanager
+def _timed_phase(label):
+    started = time.monotonic()
+    finished = threading.Event()
+    print(f"[tts] {label}: started", flush=True)
+    def report():
+        while not finished.wait(30):
+            print(f"[tts] {label}: still running ({time.monotonic()-started:.0f}s)", flush=True)
+    thread = threading.Thread(target=report, daemon=True)
+    thread.start()
+    try:
+        yield
+    except BaseException:
+        print(f"[tts] {label}: failed after {time.monotonic()-started:.1f}s", flush=True)
+        raise
+    else:
+        print(f"[tts] {label}: completed in {time.monotonic()-started:.1f}s", flush=True)
+    finally:
+        finished.set()
+        thread.join(timeout=1)
+
+
 def _load_model():
     global _MODEL
     if _MODEL is None:
-        from voxcpm import VoxCPM
+        with _timed_phase("Import VoxCPM dependencies"):
+            from voxcpm import VoxCPM
+            import torch
 
-        import time
-        import torch
-
-        path = _model_path()
+        with _timed_phase("Resolve/download model files"):
+            path = _model_path()
         optimize = os.getenv("VOXCPM_OPTIMIZE", "true").lower() == "true"
         low_memory = os.getenv("VOXCPM_LOW_MEMORY_INIT", "false").lower() == "true"
         started = time.monotonic()
-        print(f"VoxCPM initialization: low_memory={low_memory}, optimize={optimize}", flush=True)
+        print(f"[tts] VoxCPM initialization: low_memory={low_memory}, optimize={optimize}", flush=True)
         previous_dtype = torch.get_default_dtype()
         try:
             if low_memory:
@@ -67,15 +92,16 @@ def _load_model():
                 # Upstream still chooses the final LM dtype and restores VAE
                 # to FP32 before loading checkpoint weights.
                 torch.set_default_dtype(torch.float16)
-            _MODEL = VoxCPM.from_pretrained(
-                str(path),
-                load_denoiser=os.getenv("VOXCPM_LOAD_DENOISER", "false").lower() == "true",
-                optimize=optimize,
-            )
+            with _timed_phase("Initialize model and load weights"):
+                _MODEL = VoxCPM.from_pretrained(
+                    str(path),
+                    load_denoiser=os.getenv("VOXCPM_LOAD_DENOISER", "false").lower() == "true",
+                    optimize=optimize,
+                )
         finally:
             if low_memory:
                 torch.set_default_dtype(previous_dtype)
-        print(f"VoxCPM initialized in {time.monotonic() - started:.1f}s", flush=True)
+        print(f"[tts] VoxCPM initialized in {time.monotonic() - started:.1f}s", flush=True)
     return _MODEL
 
 
@@ -219,6 +245,7 @@ def generate_tts(
         return output_dir
 
     model = _load_model()
+    print(f"[tts] Model ready; preparing {total} clips", flush=True)
     min_reference_ms = int(os.getenv("VOXCPM_MIN_REFERENCE_MS", "1200"))
     fallback_references, global_fallback = _fallback_references(vocals_dir, items, min_reference_ms)
     cfg_value = float(os.getenv("VOXCPM_CFG_VALUE", "2.0"))

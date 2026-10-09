@@ -50,3 +50,23 @@ def test_console_hides_ytdlp_progress_but_keeps_download_diagnostics():
         "[download] Got error: HTTP Error 403. Retrying fragment 1",
     ):
         assert colab_worker.console_line(line)
+
+
+def test_pending_logs_retain_adjacent_events_and_retry_failed_send():
+    import httpx
+    import pytest
+    logs=colab_worker.PendingLogs()
+    logs.add("Task started")
+    logs.add("[tts] Started")
+    calls=[]
+    def handler(request):
+        import json
+        calls.append(json.loads(request.content))
+        return httpx.Response(503 if len(calls)==1 else 200)
+    with httpx.Client(base_url="https://example.test",transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            logs.send(client,"/worker",{})
+        assert len(logs.lines)==2
+        logs.send(client,"/worker",{})
+    assert calls[0]['log']==calls[1]['log']=="Task started\n[tts] Started"
+    assert not logs.lines

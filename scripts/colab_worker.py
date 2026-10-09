@@ -55,6 +55,28 @@ def console_line(line):
             or any(word in value.lower() for word in ('warning', 'error', 'failed', 'traceback')))
 
 
+class PendingLogs:
+    """Batch messages without dropping adjacent phase transitions on throttling."""
+    def __init__(self):
+        self.lines = deque()
+        self.lock = threading.Lock()
+
+    def add(self, line):
+        with self.lock:
+            self.lines.append(line.strip()[:1800])
+
+    def send(self, client, prefix, data):
+        with self.lock:
+            batch = list(self.lines)[:8]
+        response = client.post(prefix+'/heartbeat',
+                               json={**data, 'log': '\n'.join(batch)}, timeout=20)
+        response.raise_for_status()
+        with self.lock:
+            for _ in batch:
+                self.lines.popleft()
+        return response
+
+
 def run_job(client, job):
     started=time.monotonic()
     token=job['lease']; original=job['task']
@@ -62,18 +84,25 @@ def run_job(client, job):
     folder=ROOT/'remote-runs'/token
     folder.mkdir(parents=True,exist_ok=False)
     stopped=threading.Event(); lost=threading.Event()
+    pending=PendingLogs()
     def heartbeat():
         last_success=time.monotonic()
+        last_progress=None
         while not stopped.wait(10):
             try:
                 task=snapshot(folder,original)
-                stage=next((s for s in task['stages'] if s['status']=='running'),{})
+                stage=next((s for s in task.get('stages',[]) if s['status']=='running'),{})
                 data={'stage':stage.get('name'),'progress':stage.get('progress'),
                       'message':stage.get('last_message') or 'Colab processing'}
-                response=client.post(prefix+'/heartbeat',json=data,timeout=20)
-                if response.status_code in {401,409}:lost.set();return
-                response.raise_for_status()
+                progress=(data['stage'],data['progress'],data['message'])
+                if data['stage'] and progress!=last_progress:
+                    pending.add(f"[{data['stage']}] {data['progress']}% — {data['message']}")
+                    last_progress=progress
+                pending.send(client,prefix,data)
                 last_success=time.monotonic()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in {401,409}:lost.set();return
+                if time.monotonic()-last_success>150:lost.set();return
             except (httpx.HTTPError,sqlite3.Error):
                 if time.monotonic()-last_success>150:
                     lost.set();return # Lease expiry prevents a late worker from committing results.
@@ -116,23 +145,25 @@ def run_job(client, job):
         # Read output on a background thread so loss of lease can stop inference.
         tail=deque(maxlen=60)
         def relay():
-            last_post=0.0
             with (folder/'worker.log').open('w',encoding='utf-8') as log:
                 for line in process.stdout:
                     log.write(line)
                     tail.append(line)
                     if not console_line(line):continue
                     print(line,end='',flush=True)
-                    now=time.monotonic()
-                    if now-last_post>=5:
-                        last_post=now
-                        try:client.post(prefix+'/heartbeat',json={'log':line[:4000]},timeout=5)
-                        except httpx.HTTPError:pass
+                    pending.add(line)
         reader=threading.Thread(target=relay,daemon=True);reader.start()
         while process.poll() is None:
             if lost.wait(1):
                 process.terminate();break
         code=process.wait();reader.join(timeout=7)
+        stopped.set();thread.join(timeout=25)
+        # Flush the final phase messages before the lease is finished.
+        try:
+            while pending.lines:
+                pending.send(client,prefix,{})
+        except httpx.HTTPError:
+            pass
         inference_done=time.monotonic()
         if code:
             print(''.join(tail),flush=True)
