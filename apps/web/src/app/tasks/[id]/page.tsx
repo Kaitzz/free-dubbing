@@ -31,6 +31,7 @@ import {
   resumeTask,
 } from "@/lib/api"
 import { useI18n } from "@/lib/i18n"
+import { pacificLog } from "@/lib/log-time"
 import { statusBadgeClass } from "@/lib/status"
 import { SerialPollingContext, useSerialPolling } from "@/lib/use-serial-polling"
 import { AppHeader } from "@/components/app-header"
@@ -493,7 +494,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
           <CardContent>
             <ScrollArea className="h-80 rounded-lg border bg-zinc-950 p-3 text-xs text-zinc-100">
               {log ? (
-                <pre className="whitespace-pre-wrap break-words font-mono">{log}</pre>
+                <pre className="whitespace-pre-wrap break-words font-mono">{pacificLog(log)}</pre>
               ) : (
                 <p className="text-zinc-400">{t.task.emptyLog}</p>
               )}
