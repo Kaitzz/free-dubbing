@@ -6,7 +6,9 @@ import json
 import os
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import math
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from pathlib import Path
 from urllib.parse import urlparse
 import requests
@@ -18,6 +20,42 @@ from ..audio_mode import is_original_audio, target_text
 DEFAULT_VOICE = "Chinese_casual_instructor_nv1"
 DEFAULT_MODEL = "speech-2.8-turbo"
 AVAILABLE_VOICES = (DEFAULT_VOICE, "Chinese (Mandarin)_Sincere_Adult")
+
+
+class RequestGate:
+    """All requests in one TTS stage share pacing and provider cooldown."""
+    def __init__(self, rpm, clock=None, sleep=None):
+        if not math.isfinite(rpm) or rpm<=0:
+            raise ValueError("MINIMAX_TTS_RPM must be positive and finite")
+        self.interval=60/rpm
+        self.clock=clock or time.monotonic
+        self.sleep=sleep or time.sleep
+        self.next_at=0.0
+        self.lock=threading.Lock()
+
+    def acquire(self, stop):
+        while not stop.is_set():
+            with self.lock:
+                now=self.clock()
+                delay=self.next_at-now
+                if delay<=0:
+                    self.next_at=now+self.interval
+                    return
+            self.sleep(min(delay,1))
+        raise RuntimeError("TTS requests stopped after another segment failed")
+
+    def cooldown(self, seconds):
+        with self.lock:
+            self.next_at=max(self.next_at,self.clock()+seconds)
+
+
+def _retry_delay(response, attempt, limited):
+    delay=min(60*(attempt+1),120) if limited else min(2**attempt,30)
+    try:
+        value=float(getattr(response,"headers",{}).get("Retry-After",0))
+        if math.isfinite(value):delay=max(delay,min(value,300))
+    except (ValueError,TypeError):pass
+    return delay
 
 
 def generate_tts(translation_file, vocals_dir, session, progress_callback=None, *, original_vocals_file=None):
@@ -36,6 +74,8 @@ def generate_tts(translation_file, vocals_dir, session, progress_callback=None, 
     model=os.getenv("MINIMAX_TTS_MODEL",DEFAULT_MODEL)
     print(f"[tts] MiniMax model={model}; voice={voice}; API generation (no local TTS model)",flush=True)
     latest=max(int(x.get("end_time",0)) for x in items)
+    gate=RequestGate(float(os.getenv("MINIMAX_TTS_RPM","20")))
+    stop=threading.Event()
     def generate(index,item):
         path=output/f"{index:04d}.wav"
         sidecar=output/f"{index:04d}.minimax.json"
@@ -60,15 +100,25 @@ def generate_tts(translation_file, vocals_dir, session, progress_callback=None, 
             try:
                 if json.loads(sidecar.read_text())["signature"]==signature and sf.info(path).frames>0:return "cached"
             except (ValueError,KeyError,RuntimeError):pass
-        for attempt in range(3):
+        for attempt in range(6):
             try:
+                gate.acquire(stop)
                 response=requests.post(base+"/t2a_v2",headers={"Authorization":"Bearer "+key},
                                        json=payload,timeout=(15,120),allow_redirects=False)
                 if response.status_code==429 or response.status_code>=500:
-                    if attempt<2:time.sleep(2**attempt);continue
+                    if attempt<5:
+                        delay=_retry_delay(response,attempt,response.status_code==429)
+                        gate.cooldown(delay)
+                        print(f"[tts] HTTP {response.status_code}; shared cooldown {delay:g}s; segment {index} retry {attempt+1}/5",flush=True)
+                        continue
                 if response.status_code!=200:raise RuntimeError(f"MiniMax TTS HTTP {response.status_code} at segment {index}")
                 result=response.json();status=result.get("base_resp",{}).get("status_code")
-                if status!=0:raise RuntimeError(f"MiniMax TTS status {status} at segment {index}")
+                if status in {1002,1039,1000,1001} and attempt<5:
+                    delay=_retry_delay(response,attempt,status in {1002,1039})
+                    gate.cooldown(delay)
+                    print(f"[tts] MiniMax status {status}; shared cooldown {delay:g}s; segment {index} retry {attempt+1}/5",flush=True)
+                    continue
+                if status!=0:raise RuntimeError(f"MiniMax TTS status {status} at segment {index}; completed clips preserved")
                 samples,rate=sf.read(io.BytesIO(bytes.fromhex(result["data"]["audio"])),dtype="float32")
                 if not len(samples) or not np.isfinite(samples).all():raise ValueError("Empty or invalid MiniMax audio")
                 temporary=output/f".{uuid.uuid4().hex}.wav"
@@ -78,15 +128,34 @@ def generate_tts(translation_file, vocals_dir, session, progress_callback=None, 
                 sidecar.write_text(json.dumps({"signature":signature,"model":model,"voice_id":voice}),encoding="utf-8")
                 return "generated"
             except (requests.Timeout,requests.ConnectionError):
-                if attempt==2:raise RuntimeError(f"MiniMax TTS network failure at segment {index}") from None
-                time.sleep(2**attempt)
+                if attempt==5:raise RuntimeError(f"MiniMax TTS network failure at segment {index}") from None
+                gate.cooldown(min(2**attempt,30))
         raise RuntimeError(f"MiniMax TTS retries exhausted at segment {index}")
     workers=max(1,min(4,int(os.getenv("MINIMAX_TTS_CONCURRENCY","2"))))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures={executor.submit(generate,i,item):i for i,item in enumerate(items,1)}
-        for completed,future in enumerate(as_completed(futures),1):
-            status=future.result()
-            message=f"MiniMax {completed}/{len(items)} clips; segment {futures[future]} {status}"
-            if progress_callback:progress_callback(round(completed/len(items)*100),message)
-            else:print("[tts] "+message,flush=True)
+    executor=ThreadPoolExecutor(max_workers=workers)
+    remaining=iter(enumerate(items,1))
+    pending={}
+    completed=0
+    def submit_next():
+        entry=next(remaining,None)
+        if entry is not None:
+            index,item=entry
+            pending[executor.submit(generate,index,item)]=index
+    try:
+        for _ in range(workers):submit_next()
+        while pending:
+            done,_=wait(pending,return_when=FIRST_COMPLETED)
+            # Resolve failures before adding more work, so a fatal error cannot
+            # leave the rest of a 200-clip job continuing to consume API quota.
+            results=[(future,future.result()) for future in done]
+            for future,status in results:
+                index=pending.pop(future)
+                completed+=1
+                message=f"MiniMax {completed}/{len(items)} clips; segment {index} {status}"
+                if progress_callback:progress_callback(round(completed/len(items)*100),message)
+                else:print("[tts] "+message,flush=True)
+            for _ in results:submit_next()
+    finally:
+        stop.set()
+        executor.shutdown(wait=True,cancel_futures=True)
     return output
