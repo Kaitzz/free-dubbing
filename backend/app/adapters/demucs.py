@@ -13,7 +13,7 @@ from ..config import REPO_ROOT, ffmpeg_binary, ffprobe_binary
 from ..devices import resolve_device
 
 
-SHIFTS = 3
+SHIFTS = 1
 DEFAULT_CHUNK_SECONDS = 600
 OVERLAP_SECONDS = 10
 FINALIZE_BLOCK_FRAMES = 1 << 20
