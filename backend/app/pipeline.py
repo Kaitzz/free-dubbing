@@ -483,9 +483,24 @@ class PipelineRunner:
         asr_file = _require(self.artifacts.asr_file, "asr_file")
         payload = _json.loads(asr_file.read_text(encoding="utf-8"))
         if payload.get("subtitle_source"):
+            before = len(payload["result"]["utterances"])
+            if payload["subtitle_source"].get("kind") == "automatic":
+                from .adapters.source_caption_segments import regroup
+                import soundfile as sf
+                lang = payload["subtitle_source"].get("language", "")
+                import re
+                safe_lang = re.sub(r"[^A-Za-z0-9_-]", "_", lang)
+                raw_path = session / "metadata" / "raw_subtitles" / f"automatic.{safe_lang}.json3"
+                if raw_path.is_file():
+                    vocals = session / "media" / "audio_vocals.wav"
+                    duration = round(sf.info(vocals).duration * 1000) if vocals.is_file() else None
+                    payload = regroup(payload, raw_path, duration)
             self.artifacts.asr_fixed_file = session / "metadata" / "asr_fixed.json"
             self.artifacts.asr_fixed_file.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            self.stage_message("asr_fix", "Reused cleaned source CC timings; translation follows")
+            after = len(payload["result"]["utterances"])
+            message = (f"Regrouped automatic CC {before} -> {after}; word onsets preserved, word ends unknown"
+                       if payload["subtitle_source"].get("segmentation") else "Reused cleaned source CC timings; translation follows")
+            self.stage_message("asr_fix", message)
             return
 
         from .adapters.asr_sentence_fixer import fix_asr_sentences
