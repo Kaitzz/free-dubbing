@@ -60,3 +60,6 @@ VoxCPM 配音保持 10 步推理及原来的声音参考方式。此次没有降
 Notebook 只显示阶段消息、警告和错误，不再显示模型的逐帧进度条。完整子进程日志位于打印出的 Colab `remote-runs/<lease>/worker.log`，随 Colab 运行时销毁，不写入 GitHub。失败时会显示最后 60 行。GUI 仍通过心跳更新阶段进度。
 
 每个阶段现在分别显示输入传输、子进程运行、检查点打包回传的耗时与传输大小；GUI 中的阶段计时不含全部这些开销。当前仍采用逐阶段完整检查点传输，这些数字可帮助判断后续是否需要增量传输。
+
+
+可选：在 Colab 左侧 Secrets 新建 `HF_TOKEN`，填入 Hugging Face 的 Read token，并开启该启动 Notebook 的访问权限。工作 Notebook 自动读取并通过环境变量传给 Worker 及模型子进程；不需要更换启动壳。未配置时继续匿名访问，已配置但未授权时提示开启权限。此 token 用于 Hugging Face 下载认证，不会加速 GPU 推理，也不用于 ModelScope 下载。
