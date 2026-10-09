@@ -144,41 +144,76 @@ def _zip_response(files):
     return httpx.Response(200, content=buffer.getvalue())
 
 
-def test_sync_reuses_mirrored_files_and_replaces_stale_ones(tmp_path):
+STAGE_NAMES = ('download', 'separate', 'asr', 'asr_fix', 'translate', 'split_audio', 'tts', 'merge_audio', 'merge_video')
+
+
+def _job(succeeded, leases=None, files=None):
+    stages = [{'name': name, 'status': 'succeeded' if name in succeeded else 'pending', 'progress': None,
+               'started_at': None, 'completed_at': None, 'last_message': None, 'error_message': None}
+              for name in STAGE_NAMES]
+    return {'lease': 'c'*32, 'transfer_version': colab_worker.TRANSFER_VERSION, 'stage_leases': leases or {},
+            'files': files or {}, 'settings': {'base_url': 'https://example.com/v1', 'model': 'm', 'translate_concurrency': '2'},
+            'task': {'id': 'task-1', 'url': 'https://www.youtube.com/watch?v=abcdefghijk', 'stages': stages}}
+
+
+def _write(workspace, name, data):
+    path = workspace.path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
+
+
+def test_prepare_restores_a_lost_workspace_from_drive_and_drops_reset_stages(tmp_path):
     import json
     import httpx
-    import pytest
+    drive_dir = tmp_path/'drive'
+    # An earlier runtime committed download, separate and asr and checkpointed each to Drive.
+    old = colab_worker.Workspace(tmp_path/'old', 'task-1')
+    store = colab_worker.DriveStore(drive_dir, 'task-1')
+    store.save('download', 'L1', [('session/media/video_source.mp4', _write(old, 'session/media/video_source.mp4', b'video'))])
+    store.save('separate', 'L2', [(name, _write(old, name, data)) for name, data in
+                                  (('session/media/audio_vocals.wav', b'vocals'), ('session/media/audio_bgm.wav', b'bgm'))])
+    store.save('asr', 'L3', [('session/metadata/asr.json', _write(old, 'session/metadata/asr.json', b'{}'))])
+    # The new runtime starts empty, and asr was redone in the GUI since then.
+    workspace = colab_worker.Workspace(tmp_path/'new', 'task-1')
+    job = _job({'download', 'separate'}, {'download': 'L1', 'separate': 'L2', 'asr': 'L3'})
+    lease = tmp_path/'lease'; lease.mkdir()
+    def unexpected(request):
+        raise AssertionError('nothing should come from the local GUI')
+    with httpx.Client(base_url='https://test.invalid', transport=httpx.MockTransport(unexpected)) as client:
+        stats, missing = colab_worker.prepare(client, '/w', workspace, colab_worker.DriveStore(drive_dir, 'task-1'), job, lease)
+    assert (stats['drive'], stats['fetched'], missing) == (2, 0, [])
+    assert workspace.path('session/media/audio_vocals.wav').read_bytes() == b'vocals'
+    assert sorted(workspace.stages) == ['download', 'separate']
+    assert sorted(json.loads((drive_dir/'tasks/task-1/stages.json').read_text())) == ['download', 'separate']
+    assert not list((drive_dir/'tasks/task-1').glob('asr.*'))
+
+
+def test_prepare_takes_text_results_from_the_gui_and_reruns_lost_audio(tmp_path):
+    import json
+    import httpx
     workspace = colab_worker.Workspace(tmp_path/'ws', 'task-1')
-    keep = workspace.path('session/media/video_source.mp4')
-    keep.parent.mkdir(parents=True); keep.write_bytes(b'video')
-    edited = workspace.path('session/metadata/asr.json')
-    edited.parent.mkdir(parents=True); edited.write_text('old')
-    workspace.record('session/media/video_source.mp4', [5, 111])
-    workspace.record('session/metadata/asr.json', [3, 222])
-    edited.write_text('edited after mirroring')
-    uncommitted = workspace.path('session/segments/tts/0001.wav')
-    uncommitted.parent.mkdir(parents=True); uncommitted.write_bytes(b'partial')
-    stray = workspace.work/'Uploader'/'Title__task-1'
-    stray.mkdir(parents=True); (stray/'video_source.mp4').write_bytes(b'x')
-    remote = {'session/media/video_source.mp4': [5, 111], 'session/metadata/asr.json': [3, 333]}
+    # Output of a lease that never committed must not leak into the next stage.
+    _write(workspace, 'session/segments/tts/0001.wav', b'partial')
+    remote = {'session/metadata/asr.json': [2, 1], 'session/metadata/ytdlp_info.json': [2, 1],
+              'session/metadata/translation.zh.json': [2, 1]}
+    job = _job({'download', 'separate', 'asr'}, {'download': 'L1', 'separate': 'L2', 'asr': 'L3'}, remote)
     requested = []
     def handler(request):
-        requested.append(json.loads(request.content)['paths'])
-        return _zip_response({'session/metadata/asr.json': 'new'})
+        names = json.loads(request.content)['paths']
+        requested.extend(names)
+        return _zip_response({name: '{}' for name in names})
     lease = tmp_path/'lease'; lease.mkdir()
     with httpx.Client(base_url='https://test.invalid', transport=httpx.MockTransport(handler)) as client:
-        assert colab_worker.sync_input(client, '/w', workspace, remote, lease) == (1, ['session/metadata/asr.json'])
-    assert requested == [['session/metadata/asr.json']]
-    assert edited.read_text() == 'new' and keep.read_bytes() == b'video'
-    assert not uncommitted.exists() and not (workspace.work/'Uploader').exists()
-    # Mirror state survives a worker restart: nothing is downloaded again.
-    def unexpected(request):
-        pytest.fail('nothing should be downloaded')
-    with httpx.Client(base_url='https://test.invalid', transport=httpx.MockTransport(unexpected)) as client:
-        assert colab_worker.sync_input(client, '/w', colab_worker.Workspace(tmp_path/'ws', 'task-1'), remote, lease) == (2, [])
+        stats, missing = colab_worker.prepare(client, '/w', workspace, None, job, lease)
+    # translate is pending, so the GUI's copy of its output is stale and not fetched.
+    assert sorted(requested) == ['session/metadata/asr.json', 'session/metadata/ytdlp_info.json']
+    assert missing == ['download', 'separate']
+    assert not workspace.path('session/segments/tts/0001.wav').exists()
+    assert workspace.stages['asr'] == {'lease': 'L3', 'files': {'session/metadata/asr.json': 2}}
 
 
-def test_run_job_uploads_only_files_the_stage_changed(tmp_path, monkeypatch):
+def test_run_job_checkpoints_the_stage_to_drive_and_uploads_only_gui_files(tmp_path, monkeypatch):
     import io
     import json
     import httpx
@@ -186,25 +221,27 @@ def test_run_job_uploads_only_files_the_stage_changed(tmp_path, monkeypatch):
     from zipfile import ZipFile
     monkeypatch.setattr(colab_worker, 'ROOT', tmp_path)
     monkeypatch.setenv('OPENAI_API_KEY', 'key')
+    drive_dir = tmp_path/'drive'; drive_dir.mkdir()
+    monkeypatch.setenv('DUBBING_DRIVE_DIR', str(drive_dir))
     workspace = colab_worker.Workspace(tmp_path/'remote-runs/tasks/task-1', 'task-1')
-    video = workspace.path('session/media/video_source.mp4')
-    video.parent.mkdir(parents=True); video.write_bytes(b'video')
-    workspace.record('session/media/video_source.mp4', [5, 1]); workspace.save()
-    names = ('download', 'separate', 'asr', 'asr_fix', 'translate', 'split_audio', 'tts', 'merge_audio', 'merge_video')
-    task = {'id': 'task-1', 'url': 'local://upload/task-1?direction=en-zh',
-            'stages': [{'name': name, 'status': 'succeeded' if name == 'download' else 'pending'} for name in names]}
-    job = {'lease': 'b'*32, 'transfer_version': colab_worker.TRANSFER_VERSION, 'task': task,
-           'settings': {'base_url': 'https://example.com/v1', 'model': 'm', 'translate_concurrency': '2'},
-           'files': {'session/media/video_source.mp4': [5, 1]}}
+    _write(workspace, 'session/media/video_source.mp4', b'video')
+    workspace.own('download', 'L1', {'session/media/video_source.mp4': 5}); workspace.save()
+    job = _job({'download'}, {'download': 'L1'})
     class Process:
         stdout = io.StringIO('[separate] Completed\n')
         def poll(self): return 0
         def wait(self): return 0
     def start(command, env, **kwargs):
-        (Path(env['WORKFOLDER'])/'session/media/audio_vocals.wav').write_bytes(b'vocals')
+        session = Path(env['WORKFOLDER'])/'session'
+        (session/'media/audio_vocals.wav').write_bytes(b'vocals')
+        (session/'metadata').mkdir(exist_ok=True)
+        (session/'metadata/separation.json').write_text('{}')
         return Process()
     monkeypatch.setattr(colab_worker.subprocess, 'Popen', start)
-    monkeypatch.setattr(colab_worker, 'snapshot', lambda folder, original, exitcode=None: {**original, 'status': 'paused'})
+    def snapshot(folder, task, exitcode=None):
+        stages = [{**s, 'status': 'succeeded'} if s['name'] == 'separate' else s for s in task['stages']]
+        return {**task, 'stages': stages, 'status': 'paused'}
+    monkeypatch.setattr(colab_worker, 'snapshot', snapshot)
     uploads, finished = [], {}
     def handler(request):
         if request.url.path.endswith('/files'):
@@ -214,17 +251,19 @@ def test_run_job_uploads_only_files_the_stage_changed(tmp_path, monkeypatch):
             return httpx.Response(200, json={'offset': len(request.content)})
         if request.url.path.endswith('/finish'):
             finished.update(json.loads(request.content))
-            return httpx.Response(200, json={'status': 'paused', 'files': {
-                'session/media/video_source.mp4': [5, 1], 'session/media/audio_vocals.wav': [6, 2]}})
+            return httpx.Response(200, json={'status': 'paused', 'files': {}})
         return httpx.Response(200, json={'ok': True})
     with httpx.Client(base_url='https://test.invalid', transport=httpx.MockTransport(handler)) as client:
         colab_worker.run_job(client, job)
     with ZipFile(io.BytesIO(b''.join(uploads))) as z:
-        assert z.namelist() == ['session/media/audio_vocals.wav']
-    assert finished['files'] == {'session/media/audio_vocals.wav': 6} and finished['deleted'] == []
-    assert 'stage separate' in finished['report']
-    state = json.loads((tmp_path/'remote-runs/tasks/task-1/state.json').read_text())['files']
-    assert state['session/media/audio_vocals.wav']['remote'] == [6, 2]
+        assert z.namelist() == ['session/metadata/separation.json']
+    assert finished['files'] == {'session/metadata/separation.json': 2} and finished['ran'] == ['separate']
+    assert 'Drive checkpoint 2 files' in finished['report']
+    index = json.loads((drive_dir/'tasks/task-1/stages.json').read_text())
+    assert index['separate']['lease'] == job['lease']
+    assert sorted(index['separate']['files']) == ['session/media/audio_vocals.wav', 'session/metadata/separation.json']
+    state = json.loads((tmp_path/'remote-runs/tasks/task-1/state.json').read_text())['stages']
+    assert state['separate']['lease'] == job['lease'] and state['download']['lease'] == 'L1'
 
 
 def test_commit_retries_while_coordinator_is_busy(monkeypatch):
@@ -249,3 +288,14 @@ def test_download_session_folder_is_adopted_as_work_session(tmp_path):
     colab_worker.adopt_session(workspace, {'session_path': str(produced)})
     assert (workspace.session/'media/video_source.mp4').read_bytes() == b'v'
     assert not produced.exists()
+
+
+def test_download_rerun_merges_into_a_session_restored_from_drive(tmp_path):
+    workspace = colab_worker.Workspace(tmp_path/'ws', 'task-1')
+    _write(workspace, 'session/segments/tts/0001.wav', b'tts')
+    produced = workspace.work/'Uploader'/'Title__task-1'
+    (produced/'media').mkdir(parents=True); (produced/'media/video_source.mp4').write_bytes(b'v')
+    colab_worker.adopt_session(workspace, {'session_path': str(produced)})
+    assert workspace.path('session/media/video_source.mp4').read_bytes() == b'v'
+    assert workspace.path('session/segments/tts/0001.wav').read_bytes() == b'tts'
+    assert not (workspace.work/'Uploader').exists()

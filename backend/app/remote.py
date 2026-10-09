@@ -16,13 +16,13 @@ from fastapi.responses import FileResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from . import config, database, runtime_security
 from .stages import STAGE_NAMES
-from .remote_archive import listing, rebase_local_info, safe_name, stream_files, unpack, MAX_ARCHIVE_BYTES
+from .remote_archive import listing, safe_name, stream_files, unpack, MAX_ARCHIVE_BYTES
 
 router = APIRouter()
 lock = threading.RLock()
 LEASE_SECONDS = 180
 # Bump on incompatible worker protocol changes; mismatches are rejected, never downgraded.
-TRANSFER_VERSION = 2
+TRANSFER_VERSION = 3
 MAX_CHUNK = 64 * 1024 * 1024
 MAX_JSON = 4 * 1024 * 1024
 _TIMESTAMP = re.compile(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})')
@@ -44,7 +44,15 @@ def _ensure_schema():
         for column in ('claim_id', 'result'):
             if column not in columns:
                 c.execute(f'ALTER TABLE remote_leases ADD COLUMN {column} TEXT')
+        # The lease that committed each succeeded stage names its checkpoint on the worker's Drive.
+        c.execute("""CREATE TABLE IF NOT EXISTS remote_stage_versions (
+            task_id TEXT NOT NULL, stage TEXT NOT NULL, lease TEXT NOT NULL, PRIMARY KEY (task_id, stage))""")
     _schema_ready.add(key)
+
+def forget(task_id):
+    _ensure_schema()
+    with database.connect() as c:
+        c.execute('DELETE FROM remote_stage_versions WHERE task_id=?', (task_id,))
 
 def init():
     _ensure_schema()
@@ -203,9 +211,12 @@ def _youtube_cookies(task):
 
 def _job(task, token, stage):
     settings = database.get_openai_settings()
+    with database.connect() as c:
+        versions = {row['stage']: row['lease'] for row in
+                    c.execute('SELECT stage, lease FROM remote_stage_versions WHERE task_id=?', (task['id'],))}
     job = {'lease': token, 'task': task, 'transfer_version': TRANSFER_VERSION,
            'settings': {k: v for k, v in settings.items() if k != 'api_key'},
-           'files': _signatures(checkpoint_files(task))}
+           'files': _signatures(checkpoint_files(task)), 'stage_leases': versions}
     # Only download jobs receive the latest GUI cookie, never translation keys.
     if stage == 'download' and (cookies := _youtube_cookies(task)):
         job['youtube_cookies'] = cookies
@@ -373,10 +384,9 @@ def _apply_checkpoint(token, base, files, deleted):
         path = target(name)
         path.parent.mkdir(parents=True, exist_ok=True)
         os.replace(source, path)
-    rebase_local_info(session, config.WORKFOLDER/'_uploads'/task_id)
     return session
 
-def _finish(token, remote, files, deleted, report):
+def _finish(token, remote, files, deleted, ran, report):
     with lock:
         with database.connect() as c:
             row = c.execute('SELECT * FROM remote_leases WHERE token=?', (token,)).fetchone()
@@ -405,6 +415,9 @@ def _finish(token, remote, files, deleted, report):
                 for s in remote['stages']:
                     c.execute('UPDATE task_stages SET '+','.join(k+'=?' for k in stage_fields)+' WHERE task_id=? AND name=?',
                               [*(s.get(k) for k in stage_fields), task_id, s['name']])
+                    # Includes stages the worker re-ran because their outputs were lost.
+                    if s['name'] in ran and s['status'] == 'succeeded':
+                        c.execute('INSERT OR REPLACE INTO remote_stage_versions VALUES (?,?,?)', (task_id, s['name'], token))
                 c.execute('UPDATE tasks SET status=?,current_stage=?,session_path=?,title=?,final_video_path=?,error_message=?,completed_at=? WHERE id=?',
                           (next_status, remote.get('current_stage'), str(session), remote.get('title') or original.get('title'),
                            str(final) if remote['status'] == 'succeeded' else None, remote.get('error_message'),
@@ -437,16 +450,17 @@ async def finish(token: str, request: Request):
             or {s.get('name') for s in stages}!=set(STAGE_NAMES)
             or any(s.get('status') not in {'pending','running','succeeded','skipped','failed'} for s in stages)):
         raise HTTPException(422,'Invalid stage snapshot')
-    files, deleted = data.get('files', {}), data.get('deleted', [])
+    files, deleted, ran = data.get('files', {}), data.get('deleted', []), data.get('ran', [])
     try:
         if (not isinstance(files, dict) or not isinstance(deleted, list)
+                or not isinstance(ran, list) or not set(ran) <= set(STAGE_NAMES)
                 or any(type(size) is not int or size < 0 for size in files.values())
                 or not all(safe_name(name).startswith('session/') for name in [*files, *deleted])):
             raise ValueError
-    except ValueError:
+    except (ValueError, TypeError):
         raise HTTPException(422, 'Invalid checkpoint file list') from None
     report = ' '.join(str(data.get('report', '')).split())[:2000]
-    return await run_in_threadpool(_finish, token, remote, files, deleted, report)
+    return await run_in_threadpool(_finish, token, remote, files, deleted, ran, report)
 
 
 @router.get('/api/remote/files/{kind}')

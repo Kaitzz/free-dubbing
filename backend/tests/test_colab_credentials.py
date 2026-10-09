@@ -62,9 +62,10 @@ def test_worker_supplies_cookie_without_env_leak_and_cleans_file(tmp_path,monkey
         output.parent.mkdir(parents=True); output.write_text('{}')
         return Process()
     monkeypatch.setattr(worker.subprocess,'Popen',start)
-    monkeypatch.setattr(worker,'snapshot',lambda folder,original,exitcode=None: {**original,'status':'failed'})
+    monkeypatch.setattr(worker,'snapshot',lambda folder,task,exitcode=None:
+                        {**task,'status':'paused','stages':[{'name':'download','status':'succeeded'}]})
     job={'lease':'a'*32,'transfer_version':worker.TRANSFER_VERSION,'files':{},
-         'task':{'id':'test','url':'https://www.youtube.com/watch?v=abcdefghijk','stages':[]},
+         'task':{'id':'test','url':'https://www.youtube.com/watch?v=abcdefghijk','stages':[{'name':'download','status':'pending'}]},
          'settings':{'base_url':'https://example.com/v1','model':'test','translate_concurrency':'2'}}
     with httpx.Client(base_url='https://test.invalid',transport=httpx.MockTransport(handler)) as client:
         worker.run_job(client,job)

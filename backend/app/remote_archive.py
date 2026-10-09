@@ -1,6 +1,5 @@
 """Bounded, path-checked transport archives shared by coordinator and worker."""
 from pathlib import Path, PurePosixPath
-import json
 import re
 import stat
 from zipfile import ZipFile, ZipInfo, ZIP_STORED
@@ -117,20 +116,6 @@ def stream_files(files, block=1024*1024):
     yield sink.take()
 
 
-def rebase_local_info(session, uploads):
-    path = session/'metadata/local_info.json'
-    if not path.is_file():
-        return
-    data = json.loads(path.read_text(encoding='utf-8'))
-    original = dict(data)
-    subtitles = list((uploads/'subtitle').glob('*'))
-    videos = list((uploads/'video').glob('*'))
-    if data.get('subtitle_path'):
-        if len(subtitles) != 1:
-            raise ValueError('Checkpoint is missing uploaded subtitles')
-        data['subtitle_path'] = str(subtitles[0])
-    if videos:
-        data['original_path'] = str(videos[0])
-    # Rewriting an unchanged file would make it look modified to the transfer.
-    if data != original:
-        path.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+def gui_file(name):
+    """Session files the local GUI reads; audio, segments and the source video stay with Colab."""
+    return name == 'session/media/video_final.mp4' or name.startswith(('session/media/thumbnail.', 'session/metadata/'))

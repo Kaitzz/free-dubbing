@@ -550,6 +550,7 @@ def _purge_task(task: dict) -> None:
     remote_dir = WORKFOLDER / "_remote" / task["id"]
     if remote_dir.is_dir() and remote_dir.resolve().parent == (WORKFOLDER / "_remote").resolve():
         shutil.rmtree(remote_dir)
+    remote.forget(task["id"])
     log_file = database.log_path(task["id"])
     if log_file.exists():
         log_file.unlink()

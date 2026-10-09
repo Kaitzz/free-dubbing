@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from backend.app.sources import detect_source
-from backend.app.stage_reset import collect_artifact_paths, remove_stage_artifacts
+from backend.app.stage_reset import collect_artifact_paths, owner_stage, remove_stage_artifacts
 from backend.app.stages import STAGE_NAMES
 
 
@@ -69,3 +69,19 @@ def test_reset_stages_from_only_resets_downstream(monkeypatch, tmp_path):
     assert task["status"] == "queued"
     assert task["current_stage"] == "translate"
     assert task["final_video_path"] is None
+
+
+def test_owner_stage_uses_the_most_specific_redo_mapping():
+    expected = {
+        "media/video_source.mp4": "download",
+        "metadata/ytdlp_info.json": "download",
+        "media/audio_vocals.wav": "separate",
+        "metadata/asr.json": "asr",
+        "metadata/translation.zh.json": "translate",
+        "metadata/translation_preprocess.json": "translate",
+        "metadata/subtitles.zh.srt": "translate",
+        "segments/tts/0001.wav": "tts",
+        "tmp/audio_dubbing.wav": "merge_audio",
+        "media/video_final.mp4": "merge_video",
+    }
+    assert {name: owner_stage(name, "zh") for name in expected} == expected

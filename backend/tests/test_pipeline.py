@@ -971,3 +971,23 @@ def test_manual_subtitles_with_uploaded_srt_continues_to_final_merge(monkeypatch
         "succeeded",
         "succeeded",
     ]
+
+
+def test_uploaded_subtitle_is_found_in_its_task_folder_after_the_session_moved(monkeypatch, tmp_path):
+    configure_db(monkeypatch, tmp_path)
+    task_id = "moved-session"
+    url = f"local://upload/{task_id}?direction=en-zh&filename=clip.mkv"
+    workfolder = tmp_path / "work"
+    subtitle = workfolder / "_uploads" / task_id / "subtitle" / "clip.zh.srt"
+    subtitle.parent.mkdir(parents=True)
+    subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+    monkeypatch.setattr(pipeline, "WORKFOLDER", workfolder)
+    session = tmp_path / "session"
+    (session / "metadata").mkdir(parents=True)
+    # Written on another machine (the Colab worker), so the absolute path does not exist here.
+    (session / "metadata" / "local_info.json").write_text(
+        json.dumps({"subtitle_path": "/content/elsewhere/clip.zh.srt"}), encoding="utf-8"
+    )
+    runner = PipelineRunner(task_id)
+    runner.artifacts.session = session
+    assert runner._uploaded_subtitle_path({"url": url}) == subtitle

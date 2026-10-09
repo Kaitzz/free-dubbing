@@ -5,7 +5,6 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from backend.app import config, database, gpu_memory
 from backend.app.pipeline import PipelineRunner
-from backend.app.remote_archive import rebase_local_info
 
 job_dir=Path(sys.argv[1])
 task=json.loads((job_dir/'task.json').read_text(encoding='utf-8'))
@@ -16,9 +15,7 @@ for stage in task['stages']:
     database.update_stage(task['id'],stage['name'],**{k:stage.get(k) for k in
         ('status','progress','started_at','completed_at','last_message','error_message')})
 session=config.WORKFOLDER/'session'
-uploads=config.WORKFOLDER/'_uploads'/task['id']
 if session.exists():
-    rebase_local_info(session,uploads)
     database.update_task(task['id'],session_path=str(session),title=task.get('title'))
 
 class ReportingRunner(PipelineRunner):

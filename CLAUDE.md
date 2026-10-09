@@ -62,7 +62,11 @@ The private launcher notebook is `data/gui/Dubbing_Launcher.ipynb`. It is gitign
 2. It executes the code cells of `notebooks/YouDub_GUI_Colab.ipynb` from that SHA.
 3. That working notebook checks out the same SHA to `/content/free-dubbing/<sha>/`.
 4. It builds a per-commit `.venv-colab` by installing `requirements-colab.txt` against Colab's preinstalled torch, and fetches the pinned Demucs commit.
-5. It runs `scripts/colab_preflight.py`, then `scripts/colab_worker.py`.
+5. It runs `scripts/colab_preflight.py`.
+6. It mounts the Colab account's Google Drive. The user authorizes a popup once per runtime; if the mount fails, the worker runs without checkpoints.
+7. It starts `scripts/colab_worker.py` with `DUBBING_DRIVE_DIR` and `DUBBING_WORKSPACE` set.
+
+Colab Secrets (`MINIMAX_API_KEY`, plus the optional `YOUTUBE_COOKIES` and `HF_TOKEN`) belong to the Google account running Colab. Switching accounts means setting them again and opening the private launcher from that account.
 
 What follows from this:
 - **Worker-side changes need a push.** Changes to `backend/app/**`, `scripts/colab_worker.py`, `scripts/remote_job.py`, `notebooks/YouDub_GUI_Colab.ipynb` or `requirements-colab.txt` reach Colab only after pushing to `origin/main` and re-running the launcher. Every new SHA gets a fresh checkout and a fresh pip install, which takes minutes. A running worker is never hot-updated.
@@ -76,7 +80,7 @@ What follows from this:
 
 ### Pipeline (shared by both modes)
 
-- **Stages.** `backend/app/stages.py` defines nine ordered stages: `download, separate, asr, asr_fix, translate, split_audio, tts, merge_audio, merge_video`. Stage names are also hardcoded in `database.get_task` (ORDER BY), `stage_reset.STAGE_OWN_ARTIFACTS`, `pipeline._restore_cached_stage` and the frontend `lib/i18n.tsx`.
+- **Stages.** `backend/app/stages.py` defines nine ordered stages: `download, separate, asr, asr_fix, translate, split_audio, tts, merge_audio, merge_video`. Stage names are also hardcoded in `database.get_task` (ORDER BY), `stage_reset.STAGE_OWN_ARTIFACTS`, `pipeline._STAGE_ARTIFACTS` and the frontend `lib/i18n.tsx`.
 - **The runner.** `PipelineRunner.run()` in `backend/app/pipeline.py` walks the stages:
   - It never re-runs a `succeeded` stage. Instead it "restores" the stage by requiring its artifact files at fixed paths in the session directory; a missing file fails the task.
   - It skips stages based on `output_mode`. `subtitles` skips `split_audio`, `tts` and `merge_audio`, and also skips `separate` when an SRT was uploaded.
@@ -106,7 +110,11 @@ URL tasks use `<WORKFOLDER>/<uploader>/<title>__<id>/`. Local uploads use `<WORK
 - `segments/`: `vocals/NNNN.wav`, `tts/NNNN.wav`, `stretched/`
 - `tmp/`: `audio_dubbing.wav`, `audio_mixed.m4a`, `tts_references/`
 
-If you add or rename a stage artifact, update `_restore_cached_stage` and `stage_reset.STAGE_OWN_ARTIFACTS` (per-stage redo uses the latter). Many adapters skip their work when the output file already exists, so stale files get reused without any warning.
+If you add or rename a stage artifact, update two places:
+- `pipeline._STAGE_ARTIFACTS`, which drives resume and the Colab worker's "re-run what's missing" check;
+- `stage_reset.STAGE_OWN_ARTIFACTS`, which drives per-stage redo and tells the worker which stage owns a file fetched from the GUI.
+
+If the local GUI starts reading a new session file, add it to `remote_archive.gui_file`; otherwise it never leaves Colab. Many adapters skip their work when the output file already exists, so stale files get reused without any warning.
 
 ### Persistence, config and auth
 
@@ -125,20 +133,38 @@ Backend startup marks interrupted tasks failed ("Backend restarted before the ta
 
 **local** (`YOUDUB_EXECUTION_BACKEND` unset): `worker.py` runs one daemon thread with a FIFO queue inside the uvicorn process and calls `pipeline.run_task`.
 
-**colab** (`YOUDUB_EXECUTION_BACKEND=colab`): `worker.enqueue` and `worker.start` do nothing, and tasks stay `queued` in SQLite until a worker claims them. One lease covers one stage. `backend/app/remote.py` talks to `scripts/colab_worker.py` through `scripts/worker_gateway.py`, which forwards only `hello`, `claim` and `<lease>/{files,heartbeat,output,finish}`. The coordinator keeps exactly one session directory per task (`workfolder/_remote/<task_id>/session` for new tasks; legacy tasks keep their old `session_path`). The worker keeps a persistent per-task workspace on Colab disk: `remote-runs/tasks/<task_id>/` holds `workfolder/{session,_uploads/<id>}`, `state.json` and `leases/<lease>/{data,task.json,worker.log}`. It keeps at most 3 workspaces. Nothing in the transfer reads file contents to detect changes; files are identified by `(size, mtime_ns)`. Each lease goes like this:
+**colab** (`YOUDUB_EXECUTION_BACKEND=colab`): `worker.enqueue` and `worker.start` do nothing, and tasks stay `queued` in SQLite until a worker claims them. One lease covers one stage. `backend/app/remote.py` talks to `scripts/colab_worker.py` through `scripts/worker_gateway.py`, which forwards only `hello`, `claim` and `<lease>/{files,heartbeat,output,finish}`. The current protocol is `TRANSFER_VERSION = 3`.
+
+Where each copy of a task's data lives:
+- **Colab local disk** holds the full working copy. The workspace root is `$DUBBING_WORKSPACE/tasks/<task_id>/` (the notebook sets `/content/dubbing-workspace`; it defaults to `remote-runs/`). It contains `workfolder/{session,_uploads/<id>}`, `state.json`, and `leases/<lease>/{data,task.json,worker.log}`, and at most 3 task workspaces are kept. `state.json` records, per committed stage, the lease that produced it and the session files it owns. A file belongs to the last stage that wrote it.
+- **Google Drive** holds the durable copy: one uncompressed zip per committed stage at `$DUBBING_DRIVE_DIR/tasks/<task_id>/<stage>.<lease>.zip`, indexed by `stages.json`. The notebook mounts this Colab account's Drive at `MyDrive/free-dubbing`. Checkpoints are kept for the 20 most recent tasks (`DUBBING_DRIVE_KEEP_TASKS`). Without Drive the worker still runs, but a lost runtime re-runs the audio stages.
+- **The local coordinator** holds only what the GUI shows (`remote_archive.gui_file`): `media/video_final.mp4`, `media/thumbnail.*` and `metadata/**`. New tasks use one session at `workfolder/_remote/<task_id>/session`; legacy tasks keep their older, full `session_path`.
+- **`remote_stage_versions`** (on the coordinator) maps each succeeded stage to the lease that committed it, so stale checkpoints are never reused.
+
+Nothing in the transfer hashes file contents. Each lease goes like this:
 1. **Claim.** `POST /api/colab-worker/claim` with `{transfer_version, claim_id}` returns:
    - a lease token (180 s TTL) and a task snapshot;
    - the translation settings without the key;
-   - `files`, the coordinator's committed files as `{name: [size, mtime_ns]}`. `uploads/video/*` is omitted once download has succeeded.
+   - `files`: the coordinator's files as `{name: [size, mtime_ns]}`. That means uploads, GUI files, or the full session of a legacy task. `uploads/video/*` is omitted once download has succeeded.
+   - `stage_leases`.
 
-   The YouTube cookie is included only for the download stage. Only one lease can be active or committing at a time. Re-sending the same `claim_id` returns the same lease, so a lost response doesn't orphan a task.
-2. **Mirror.** The worker keeps a file only if `state.json` says its copy matches that coordinator signature and its own stat is unchanged. It deletes everything else in the workspace: uncommitted or stale output, plus stray folders. It then fetches the missing files with one `POST <lease>/files`, which the coordinator streams as an uncompressed zip without staging it on disk (`remote_archive.stream_files`). When the worker already ran the previous stage, nothing is downloaded.
-3. **Run.** The worker snapshots the session stats, then spawns `scripts/remote_job.py`. That script creates a fresh job SQLite under the lease folder, recreates the task in manual mode, runs `PipelineRunner` for exactly one stage in `workfolder/session`, and exits. The download stage's video-named folder is renamed to `session` afterwards (`adopt_session`).
+   The YouTube cookie is included only for the download stage. Only one lease can be active or committing at a time. Re-sending the same `claim_id` returns the same lease.
+2. **Prepare** (`colab_worker.prepare`).
+   - A stage is valid when it has succeeded and its lease matches `stage_leases` (`legacy` if it has no version). The worker drops outputs of invalid stages, untracked files (output of leases that never committed), and stray folders.
+   - Valid stages missing locally are restored from their Drive archive.
+   - Then any coordinator file the worker lacks whose owner stage is valid is fetched with one `POST <lease>/files`. The coordinator streams these as an uncompressed zip (`stream_files`). The owner stage comes from `stage_reset.owner_stage`, the same mapping as per-stage redo.
+   - Valid stages whose `pipeline.stage_artifacts` are still missing are marked pending in the task handed to the stage, so they re-run one per lease. Text results usually survive, because the GUI holds them.
+3. **Run.** The worker snapshots session stats, then spawns `scripts/remote_job.py`. That script creates a fresh job SQLite under the lease folder, recreates the task in manual mode, runs `PipelineRunner` for exactly one stage in `workfolder/session`, and exits. Afterwards, `adopt_session` merges the download stage's video-named folder into `session`.
 4. **Heartbeat.** Every 10 s a heartbeat thread posts progress from the job database plus up to 100 log entries `{t, m}` stamped with Colab time. `log_start` lets the coordinator drop re-sent batches. Heartbeats and output chunks renew the lease.
-5. **Output and finish.** Only files whose stat changed during the stage are zipped (stored, uncompressed) and `PUT` to `/output` in 64 MiB chunks. Chunks are offset-checked; a retried chunk is acknowledged and `offset=0` restarts the upload. Then `POST /finish` sends the job-DB snapshot, `files` `{name: size}`, `deleted`, and a timing `report`. In a threadpool, the coordinator unpacks into `_remote/<task>/.incoming-<lease>`, checks names and sizes, `os.replace`s the files into the single session, removes deletions, and updates the DB. It returns the new file signatures, which the worker records in `state.json`. Finish is idempotent: the stored result is returned on retry, and `409 … in progress` means retry later. A failed commit marks the task failed with "Checkpoint commit failed: …" and never leaves a lease stuck in `committing`.
-6. **Expiry.** `remote.expire()` fails any task whose lease lapsed ("Colab disconnected"), restores the stage snapshot taken at claim time, and deletes that lease's transfer files. GUI list and detail polling also call it. A worker that comes back late gets 409. `remote.init()` at startup deletes leftover `data/remote/*` and `.incoming-*` folders that belong to no active lease.
+5. **Checkpoint and finish.**
+   - The files whose stat changed become the stage's outputs. They are recorded in `state.json` before finish, and archived to Drive. A failed Drive write only logs a warning.
+   - Only the GUI subset is zipped (stored, uncompressed) and `PUT` to `/output` in 64 MiB chunks. Chunks are offset-checked; a retried chunk is acknowledged and `offset=0` restarts the upload. Failed stages send nothing.
+   - `POST /finish` carries the job-DB snapshot, `files` `{name: size}`, `deleted`, `ran` (the stages that executed, including re-runs), and a timing `report`.
+   - In a threadpool, the coordinator unpacks into `_remote/<task>/.incoming-<lease>`, checks names and sizes, `os.replace`s the files into the session, updates statuses, and sets `remote_stage_versions[stage] = lease` for each stage in `ran`.
+   - Finish is idempotent: the stored result is returned on retry, and `409 … in progress` means retry later. A failed commit marks the task failed with "Checkpoint commit failed: …" and never leaves a lease stuck in `committing`.
+6. **Expiry.** `remote.expire()` fails any task whose lease lapsed ("Colab disconnected"), restores the stage snapshot taken at claim time, and deletes that lease's transfer files. GUI list and detail polling also call it. A worker that comes back late gets 409. `remote.init()` at startup deletes leftover `data/remote/*` and `.incoming-*` folders that belong to no active lease. Deleting or rerunning a task removes its `_remote/<task_id>` folder and its stage versions.
 
-The worker retries network errors and 5xx/429 responses with backoff. An exception in one lease is logged and the worker moves on to the next claim instead of exiting.
+The worker retries network errors and 5xx/429 responses with backoff. An exception in one lease is logged and the worker moves on to the next claim instead of exiting. Because sessions move between machines, `PipelineRunner._uploaded_subtitle_path` falls back to `_uploads/<task_id>/subtitle/` when the absolute path recorded in `local_info.json` doesn't exist.
 
 Other entry points:
 - `scripts/colab_pipeline.py` with `notebooks/YouDub_Pipeline_Colab.ipynb`: the whole pipeline inside Colab, with no GUI and no transfer.
@@ -156,11 +182,11 @@ Next.js App Router pages: `/` (submit a task, task history) and `/tasks/[id]` (s
 - **Stage durations.** These exist only as `task_stages.started_at` and `completed_at`, at 1-second precision. In colab mode they come from the Colab clock in the job database and exclude transfer and restore time.
 - **Adapter output.** Adapters `print()` to stdout (`[download]`, `[tts]`, `[translate]`, `[merge_video]`). `openai_translate` uses `logging`, but nothing configures logging, so its INFO lines are dropped and WARNING and above go to stderr unformatted. FFmpeg and yt-dlp stderr is not captured into exceptions or the task log.
   - In local mode, stdout lands in the uvicorn console. That is `data/gui/backend.log`, which has no timestamps and is mostly access-log lines from GUI polling.
-  - In colab mode, the subprocess output goes to `remote-runs/tasks/<task>/leases/<lease>/worker.log` on Colab, which disappears with the runtime. Only lines that pass `colab_worker.console_line()` are relayed to the GUI.
+  - In colab mode, the subprocess output goes to `<workspace>/tasks/<task>/leases/<lease>/worker.log` on Colab disk, which disappears with the runtime. Only lines that pass `colab_worker.console_line()` are relayed to the GUI.
 - **Relayed Colab lines** are written as `[<Colab UTC time>] [Colab] …`, one timestamp per line, with re-sent batches dropped. Each stage's fresh runner still re-logs `Task started`, `Device plan` and `Reused cached output` for every earlier stage.
 - **Per-stage transfer timing** reaches the task log in two forms:
-  - the worker's `[Colab] [transfer] Input: …` and `Output: …` lines;
-  - one coordinator line per stage, `[transfer] stage <name>: input … ; process … ; output … ; committed N files (X MiB), D deleted in T s`.
+  - the worker's `[Colab] [transfer] Input: …` line (stages restored from Drive and files fetched from the GUI), `Output: …` line (GUI upload and Drive checkpoint), and `Re-running …` line;
+  - one coordinator line per stage, `[transfer] stage <name>: input … ; process … ; GUI upload … ; Drive checkpoint … ; committed N files (X MiB), D deleted in T s`.
 
   Use these, not the GUI stage durations, to see where time goes.
 
@@ -179,10 +205,11 @@ The user's main complaints are slowness, crashes, logs and timings that can't be
   - Zip and unzip on both sides took about 4.3 minutes.
   - Download plus subprocess start took about 3.8 minutes.
 
-The per-stage transfer removes most of that overhead. What remains:
+The per-stage transfer removes most of that overhead. With Drive checkpoints, only GUI files cross the tunnel: about 112 MiB of the 743 MiB session in that task, almost all of it the final video. What remains:
 - **TTS dominates compute.** It took 14.7 of the 22.6 compute minutes in the baseline task. VoxCPM generates one clip at a time, and torch.compile is off on Colab (`VOXCPM_OPTIMIZE=false`).
 - **NVENC is not used on Colab.** `merge_video` falls back to CPU libx264. Check why `ffmpeg_binary()` fails the `h264_nvenc` probe there.
 - **One Python process per stage.** Each stage imports torch and validates the device again, which costs roughly 10–20 s per stage.
-- **Legacy disk use.** Old per-stage session copies are not auto-deleted: `workfolder/_remote/<task>/<32-hex lease>/session`, about 18 GB on 2026-10-09. Deleting or rerunning a task now removes its whole `_remote/<task_id>` folder.
+- **Legacy sessions are still full-size locally.** Tasks from before the Drive change keep their complete sessions under `workfolder/_remote/<task>/<lease>/session`, about 3.9 GB for 8 tasks. That's the only copy of their intermediates, so resuming one fetches its files from the GUI once per runtime.
+- **The Drive checkpoint is on the critical path.** It is written before finish so the stage is durable. On Drive FUSE the write lands in a local cache first, and a runtime that dies before the background upload finishes loses that last checkpoint; that stage then re-runs. Deleted checkpoints go to Drive's trash, which still counts against the quota until it is emptied.
 - **Redundant encoding.** `local_video._transcode_to_mp4` always re-encodes uploads with libx264. `merge_video` re-encodes the video even for dubbing-only output with no burned-in subtitles. `ytdlp._download_with_format_candidates` tries all four format selectors after any error, not only "format unavailable".
 - **Long-video scaling.** `audio.merge_tts_audio` decodes each TTS clip up to three times with librosa and builds the track with `np.concatenate` in a loop, which is quadratic. `split_audio` and SenseVoice load the full vocals track into memory through pydub. SenseVoice reports no progress at all.

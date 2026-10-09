@@ -14,10 +14,31 @@ from .devices import device_plan_summary
 from .runtime_checks import validate_runtime_device
 from .sources import detect_source
 from .stages import STAGES
-from .youtube import is_local_upload_url
+from .youtube import is_local_upload_url, local_upload_task_id
 
 
 logger = logging.getLogger(__name__)
+
+# What each succeeded stage leaves in its session, keyed by PipelineArtifacts field.
+_STAGE_ARTIFACTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "download": (("video_file", "media/video_source.mp4"),),
+    "separate": (("vocals_file", "media/audio_vocals.wav"), ("bgm_file", "media/audio_bgm.wav")),
+    "asr": (("asr_file", "metadata/asr.json"),),
+    "asr_fix": (("asr_fixed_file", "metadata/asr_fixed.json"),),
+    "translate": (("translation_file", "metadata/translation.{target}.json"),),
+    "split_audio": (("vocals_dir", "segments/vocals"),),
+    "tts": (("tts_dir", "segments/tts"),),
+    "merge_audio": (("dubbing_file", "tmp/audio_dubbing.wav"), ("timings_file", "metadata/timings.json")),
+    "merge_video": (("final_video", "media/video_final.mp4"),),
+}
+
+
+def stage_artifacts(stage: str, session: Path, url: str) -> dict[str, Path]:
+    """Paths a succeeded stage must have left in the session for later stages to resume."""
+    if stage not in _STAGE_ARTIFACTS:
+        raise RuntimeError(f"Unknown pipeline stage: {stage}")
+    target = detect_source(url).target_language if stage == "translate" else ""
+    return {field: session / relative.format(target=target) for field, relative in _STAGE_ARTIFACTS[stage]}
 
 
 @dataclass
@@ -222,7 +243,13 @@ class PipelineRunner:
         subtitle_path = str(info.get("subtitle_path") or "").strip()
         if not subtitle_path:
             return None
-        return _require_existing(Path(subtitle_path), "uploaded_subtitle_file")
+        stored = Path(subtitle_path)
+        if not stored.exists():
+            # Sessions move between machines (Colab worker); the upload keeps its task folder.
+            from .adapters.local_subtitles import uploaded_subtitle_file
+
+            stored = uploaded_subtitle_file(WORKFOLDER, local_upload_task_id(task["url"])) or stored
+        return _require_existing(stored, "uploaded_subtitle_file")
 
     def _write_uploaded_asr_artifact(self, task: dict) -> Path:
         from .adapters.local_subtitles import write_uploaded_asr_artifact
@@ -348,41 +375,8 @@ class PipelineRunner:
 
         session = _require_existing(Path(session_path), "session")
         self.artifacts.session = session
-
-        if stage == "download":
-            self.artifacts.video_file = _require_existing(session / "media" / "video_source.mp4", "video_file")
-            return
-        if stage == "separate":
-            self.artifacts.vocals_file = _require_existing(session / "media" / "audio_vocals.wav", "vocals_file")
-            self.artifacts.bgm_file = _require_existing(session / "media" / "audio_bgm.wav", "bgm_file")
-            return
-        if stage == "asr":
-            self.artifacts.asr_file = _require_existing(session / "metadata" / "asr.json", "asr_file")
-            return
-        if stage == "asr_fix":
-            self.artifacts.asr_fixed_file = _require_existing(session / "metadata" / "asr_fixed.json", "asr_fixed_file")
-            return
-        if stage == "translate":
-            source = detect_source(task["url"])
-            self.artifacts.translation_file = _require_existing(
-                session / "metadata" / f"translation.{source.target_language}.json",
-                "translation_file",
-            )
-            return
-        if stage == "split_audio":
-            self.artifacts.vocals_dir = _require_existing(session / "segments" / "vocals", "vocals_dir")
-            return
-        if stage == "tts":
-            self.artifacts.tts_dir = _require_existing(session / "segments" / "tts", "tts_dir")
-            return
-        if stage == "merge_audio":
-            self.artifacts.dubbing_file = _require_existing(session / "tmp" / "audio_dubbing.wav", "dubbing_file")
-            self.artifacts.timings_file = _require_existing(session / "metadata" / "timings.json", "timings_file")
-            return
-        if stage == "merge_video":
-            self.artifacts.final_video = _require_existing(session / "media" / "video_final.mp4", "final_video")
-            return
-        raise RuntimeError(f"Unknown pipeline stage: {stage}")
+        for field, path in stage_artifacts(stage, session, task["url"]).items():
+            setattr(self.artifacts, field, _require_existing(path, field))
 
     def _download(self, task: dict) -> None:
         source = detect_source(task["url"])

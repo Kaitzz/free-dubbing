@@ -16,17 +16,35 @@ import time
 import traceback
 from urllib.parse import urlparse
 from uuid import uuid4
+from zipfile import BadZipFile
 
 import httpx
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from backend.app.remote_archive import pack_files, rebase_local_info, safe_name, unpack
+from backend.app.pipeline import stage_artifacts
+from backend.app.remote_archive import gui_file, pack_files, safe_name, unpack
+from backend.app.sources import detect_source
+from backend.app.stage_reset import owner_stage
 from backend.app.youtube import is_youtube_url
 from scripts.colab_credentials import write_youtube_cookie
 
 ROOT=Path(__file__).resolve().parents[1]
-TRANSFER_VERSION = 2
+TRANSFER_VERSION = 3
 CHUNK = 64 * 1024 * 1024  # Below Cloudflare's 100 MB request limit.
 KEEP_WORKSPACES = 3
+
+
+def workspace_root():
+    # The notebook keeps workspaces outside the per-commit checkout so a relaunch can reuse them.
+    return Path(os.environ.get('DUBBING_WORKSPACE') or ROOT/'remote-runs')/'tasks'
+
+
+def drive_root():
+    configured = os.environ.get('DUBBING_DRIVE_DIR', '')
+    if configured and Path(configured).is_dir():
+        return Path(configured)
+    if configured:
+        print(f'[drive] {configured} is not available; stage checkpoints are disabled', flush=True)
+    return None
 
 def model_cache_path():
     # Resolve the intentionally shared cache before the runtime checks its root.
@@ -120,11 +138,11 @@ class PendingLogs:
 
 
 class Workspace:
-    """Per-task files kept across leases on Colab disk.
+    """Per-task working copy on Colab disk.
 
-    state.json maps each file to the committed coordinator version it mirrors
-    (size, mtime) and to its own stat when synced, so stale or locally modified
-    files are detected without reading their contents.
+    state.json records, for each committed stage, the lease that produced it and
+    the session files it owns (a file belongs to the last stage that wrote it).
+    Files of stages that were reset, failed or committed elsewhere are dropped.
     """
     def __init__(self, root, task_id):
         self.root = root
@@ -133,36 +151,109 @@ class Workspace:
         self.uploads = self.work/'_uploads'/task_id
         self.state_file = root/'state.json'
         try:
-            self.files = json.loads(self.state_file.read_text(encoding='utf-8'))['files']
+            self.stages = json.loads(self.state_file.read_text(encoding='utf-8'))['stages']
         except (OSError, ValueError, KeyError):
-            self.files = {}
+            self.stages = {}
 
     def path(self, name):
         prefix, relative = safe_name(name).split('/', 1)
         return (self.session if prefix == 'session' else self.uploads)/relative
 
-    def scan(self, prefixes=('session', 'uploads')):
+    def scan(self, prefix='session'):
+        base = self.session if prefix == 'session' else self.uploads
         found = {}
-        for prefix in prefixes:
-            base = self.session if prefix == 'session' else self.uploads
-            for path in base.rglob('*') if base.is_dir() else ():
-                if path.is_symlink():
-                    raise ValueError('Cannot transport symlinks')
-                if path.is_file():
-                    metadata = path.stat()
-                    found[f'{prefix}/{path.relative_to(base).as_posix()}'] = [
-                        metadata.st_size, metadata.st_mtime_ns, metadata.st_ino]
+        for path in base.rglob('*') if base.is_dir() else ():
+            if path.is_symlink():
+                raise ValueError('Cannot transport symlinks')
+            if path.is_file():
+                metadata = path.stat()
+                found[f'{prefix}/{path.relative_to(base).as_posix()}'] = [
+                    metadata.st_size, metadata.st_mtime_ns, metadata.st_ino]
         return found
 
-    def record(self, name, remote):
-        metadata = self.path(name).stat()
-        self.files[name] = {'remote': list(remote), 'local': [metadata.st_size, metadata.st_mtime_ns, metadata.st_ino]}
+    def own(self, stage, lease, files):
+        for entry in self.stages.values():
+            for name in files:
+                entry['files'].pop(name, None)
+        entry = self.stages.setdefault(stage, {'lease': lease, 'files': {}})
+        entry['lease'] = lease
+        entry['files'].update(files)
+
+    def drop(self, names):
+        for entry in self.stages.values():
+            for name in names:
+                entry['files'].pop(name, None)
 
     def save(self):
         self.root.mkdir(parents=True, exist_ok=True)
         temporary = self.state_file.with_suffix('.tmp')
-        temporary.write_text(json.dumps({'files': self.files}), encoding='utf-8')
+        temporary.write_text(json.dumps({'stages': self.stages}), encoding='utf-8')
         os.replace(temporary, self.state_file)
+
+
+class DriveStore:
+    """One uncompressed archive per committed stage on the mounted Google Drive.
+
+    Drive is slow with many small files, so a stage's outputs travel as a single
+    zip; stages.json names the lease that produced each archive.
+    """
+    def __init__(self, root, task_id):
+        self.root = Path(root)
+        self.dir = self.root/'tasks'/task_id
+        self.index_file = self.dir/'stages.json'
+        try:
+            self.index = json.loads(self.index_file.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            self.index = {}
+
+    def _write_index(self):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        temporary = self.dir/'.stages.json.tmp'
+        temporary.write_text(json.dumps(self.index), encoding='utf-8')
+        os.replace(temporary, self.index_file)
+
+    def keep(self, valid):
+        stale = [stage for stage, entry in self.index.items() if valid.get(stage) != entry['lease']]
+        for stage in stale:
+            (self.dir/self.index.pop(stage)['archive']).unlink(missing_ok=True)
+        if stale:
+            self._write_index()
+
+    def save(self, stage, lease, files):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        archive = f'{stage}.{lease}.zip'
+        temporary = self.dir/f'.{archive}.tmp'
+        pack_files(temporary, files)
+        os.replace(temporary, self.dir/archive)
+        previous = self.index.get(stage)
+        self.index[stage] = {'lease': lease, 'archive': archive,
+                             'files': {name: path.stat().st_size for name, path in files}}
+        self._write_index()
+        if previous and previous['archive'] != archive:
+            (self.dir/previous['archive']).unlink(missing_ok=True)
+
+    def restore(self, stage, lease, staging):
+        """Extract a stage archive into staging; None when Drive has no archive for that lease."""
+        entry = self.index.get(stage)
+        if not entry or entry['lease'] != lease:
+            return None
+        unpack(self.dir/entry['archive'], staging)
+        for name, size in entry['files'].items():
+            if not (staging/name).is_file() or (staging/name).stat().st_size != size:
+                raise ValueError(f'Drive checkpoint for {stage} is incomplete')
+        return dict(entry['files'])
+
+
+def prune_drive(root, current):
+    tasks = Path(root)/'tasks'
+    keep = int(os.environ.get('DUBBING_DRIVE_KEEP_TASKS', '20'))
+    def last_used(folder):
+        index = folder/'stages.json'
+        return index.stat().st_mtime if index.exists() else 0
+    folders = sorted((p for p in tasks.iterdir() if p.is_dir()), key=last_used, reverse=True) if tasks.is_dir() else []
+    for folder in folders[keep:]:
+        if folder.name != current:
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 def call(client, method, url, attempts=6, **kwargs):
@@ -206,54 +297,102 @@ def download(client, prefix, names, archive):
             time.sleep(5 * (attempt + 1))
 
 
-def sync_input(client, prefix, workspace, remote, lease_dir):
-    """Mirror the coordinator's committed files; download only missing or stale ones."""
-    local = workspace.scan()
-    keep = {name for name, signature in remote.items()
-            if (record := workspace.files.get(name)) and record['remote'] == signature
-            and local.get(name) == record['local']}
-    # Everything else here is uncommitted output, out of date, or no longer needed.
-    for name in local:
-        if name not in keep:
+def _move_into(workspace, staging, names):
+    for name in names:
+        target = workspace.path(name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(staging/name, target)
+
+
+def prepare(client, prefix, workspace, drive, job, lease_dir):
+    """Give the workspace the outputs of every succeeded stage; return stats and stages to re-run.
+
+    Sources in order: this workspace, Drive checkpoints, then whatever the local
+    GUI holds (uploads, text results, full sessions of older tasks).
+    """
+    task, remote = job['task'], job['files']
+    versions = job.get('stage_leases') or {}
+    succeeded = [s['name'] for s in task['stages'] if s['status'] == 'succeeded']
+    # Stages committed before checkpoint versions existed are only on the local GUI.
+    wanted = {stage: versions.get(stage, 'legacy') for stage in succeeded}
+    workspace.stages = {stage: entry for stage, entry in workspace.stages.items()
+                        if wanted.get(stage) == entry['lease']}
+    owned = {name for entry in workspace.stages.values() for name in entry['files']}
+    for name in workspace.scan():
+        if name not in owned:
             workspace.path(name).unlink()
-    workspace.files = {name: workspace.files[name] for name in keep}
     for entry in list(workspace.work.iterdir()) if workspace.work.is_dir() else ():
         if entry not in (workspace.session, workspace.uploads.parent):
             shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
-    needed = sorted(name for name in remote if name not in keep)
+    stats = {'drive': 0, 'drive_mb': 0.0, 'fetched': 0, 'fetched_mb': 0.0}
+    if drive:
+        try:
+            drive.keep({stage: lease for stage, lease in wanted.items() if lease != 'legacy'})
+        except OSError as exc:
+            print(f'[drive] Could not drop stale checkpoints ({type(exc).__name__}: {exc})', flush=True)
+        for stage in succeeded:
+            if stage in workspace.stages or wanted[stage] == 'legacy':
+                continue
+            staging = lease_dir/'drive'/stage
+            try:
+                files = drive.restore(stage, wanted[stage], staging)
+            except (OSError, ValueError, BadZipFile) as exc:
+                print(f'[drive] Checkpoint for {stage} unusable ({type(exc).__name__}: {exc})', flush=True)
+                continue
+            if files is not None:
+                _move_into(workspace, staging, files)
+                workspace.own(stage, wanted[stage], files)
+                stats['drive'] += 1
+                stats['drive_mb'] += sum(files.values()) / 2**20
+    target = detect_source(task['url']).target_language
+    local = {**workspace.scan(), **workspace.scan('uploads')}
+    needed = [name for name, (size, _) in remote.items()
+              if (local.get(name, [None])[0] != size if name.startswith('uploads/')
+                  else name not in local and owner_stage(name.split('/', 1)[1], target) in wanted)]
+    for name in workspace.scan('uploads'):
+        if name not in remote:  # The original video is not listed once download has succeeded.
+            workspace.path(name).unlink()
     if needed:
         archive, staging = lease_dir/'input.zip', lease_dir/'incoming'
         download(client, prefix, needed, archive)
         unpack(archive, staging)
         for name in needed:
-            source = staging/name
-            if not source.is_file() or source.stat().st_size != remote[name][0]:
-                raise ValueError(f'Downloaded checkpoint is incomplete: {name}')
-            target = workspace.path(name)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(source, target)
-        if 'session/metadata/local_info.json' in needed:
-            rebase_local_info(workspace.session, workspace.uploads)
+            if not (staging/name).is_file() or (staging/name).stat().st_size != remote[name][0]:
+                raise ValueError(f'Downloaded file is incomplete: {name}')
+        _move_into(workspace, staging, needed)
         for name in needed:
-            workspace.record(name, remote[name])
+            if name.startswith('session/'):
+                stage = owner_stage(name.split('/', 1)[1], target)
+                workspace.own(stage, wanted[stage], {name: remote[name][0]})
         archive.unlink()
-        shutil.rmtree(staging)
+        stats['fetched'] = len(needed)
+        stats['fetched_mb'] = sum(remote[name][0] for name in needed) / 2**20
+    shutil.rmtree(lease_dir/'drive', ignore_errors=True)
+    shutil.rmtree(lease_dir/'incoming', ignore_errors=True)
     workspace.save()
-    return len(keep), needed
+    missing = [stage for stage in succeeded if not all(
+        path.exists() for path in stage_artifacts(stage, workspace.session, task['url']).values())]
+    return stats, missing
 
 
 def adopt_session(workspace, task):
-    """The download stage names its folder after the video; leases always run in work/session."""
+    """The download stage writes into a folder named after the video; leases always use work/session."""
     produced = Path(task['session_path']) if task.get('session_path') else None
     if not produced or not produced.is_dir() or produced.resolve() == workspace.session.resolve():
         return
     if not produced.resolve().is_relative_to(workspace.work.resolve()):
         raise ValueError('Invalid worker session')
-    if workspace.session.exists():
-        if any(path.is_file() for path in workspace.session.rglob('*')):
-            raise ValueError('Worker session already holds files')
-        shutil.rmtree(workspace.session)
-    produced.rename(workspace.session)
+    # Merge: later stages restored from a checkpoint may already be in work/session.
+    for path in sorted(produced.rglob('*')):
+        if path.is_file():
+            target = workspace.session/path.relative_to(produced)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(path, target)
+    shutil.rmtree(produced)
+    parent = produced.parent
+    while parent != workspace.work and parent.is_dir() and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
 
 
 def upload(client, prefix, archive):
@@ -301,9 +440,10 @@ def run_job(client, job):
         raise RuntimeError('Coordinator returned an incompatible job; restart the local GUI services')
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', original['id']):
         raise ValueError('Unexpected task id')
-    stage_name = next((s['name'] for s in original['stages'] if s['status'] not in {'succeeded','skipped'}), 'merge_video')
     prefix=f'/api/colab-worker/{token}'
-    workspace = Workspace(ROOT/'remote-runs'/'tasks'/original['id'], original['id'])
+    workspace = Workspace(workspace_root()/original['id'], original['id'])
+    drive_dir = drive_root()
+    drive = DriveStore(drive_dir, original['id']) if drive_dir else None
     lease_dir = workspace.root/'leases'/token
     lease_dir.mkdir(parents=True,exist_ok=False)
     stopped=threading.Event(); lost=threading.Event()
@@ -336,11 +476,21 @@ def run_job(client, job):
     process=None
     cookie_file=None
     try:
-        reused, needed = sync_input(client, prefix, workspace, job['files'], lease_dir)
-        input_mb = sum(job['files'][name][0] for name in needed) / 2**20
+        stats, missing = prepare(client, prefix, workspace, drive, job, lease_dir)
         input_done=time.monotonic()
-        say(f'[transfer] Input: {len(needed)} files ({input_mb:.1f} MiB) downloaded, {reused} reused, {input_done-started:.1f}s')
-        (lease_dir/'task.json').write_text(json.dumps(original),encoding='utf-8')
+        say(f"[transfer] Input: {stats['drive']} stages from Drive ({stats['drive_mb']:.1f} MiB), "
+            f"{stats['fetched']} files from local GUI ({stats['fetched_mb']:.1f} MiB), {input_done-started:.1f}s"
+            + ('' if drive else '; Drive not mounted, checkpoints off'))
+        task = json.loads(json.dumps(original))
+        if missing:
+            say(f"[transfer] Re-running {', '.join(missing)}: outputs not on this runtime, Drive or the local GUI")
+            for stage in task['stages']:
+                if stage['name'] in missing:
+                    stage.update(status='pending', progress=None, started_at=None, completed_at=None,
+                                 error_message=None, last_message='Re-running: earlier output unavailable')
+        statuses = {stage['name']: stage['status'] for stage in task['stages']}
+        stage_name = next((s['name'] for s in task['stages'] if s['status'] not in {'succeeded','skipped'}), 'merge_video')
+        (lease_dir/'task.json').write_text(json.dumps(task),encoding='utf-8')
         settings=job['settings']
         env=os.environ.copy()
         env.update(YOUDUB_DATA_DIR=str(lease_dir/'data'),WORKFOLDER=str(workspace.work),
@@ -361,7 +511,7 @@ def run_job(client, job):
             cookie_file=write_youtube_cookie(cookie_value,lease_dir/'data')
         del cookie_value
         if lost.is_set():raise RuntimeError('Lease lost during input transfer')
-        before = workspace.scan(('session',))
+        before = workspace.scan()
         print(f"Task {original['id']}: running {stage_name}",flush=True)
         process=subprocess.Popen([sys.executable,'-u',str(ROOT/'scripts/remote_job.py'),str(lease_dir)],
             env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
@@ -385,43 +535,56 @@ def run_job(client, job):
             print(''.join(tail),flush=True)
         say(f"[worker] Stage process: {stage_done-input_done:.1f}s, exit code {code}; full log: {lease_dir/'worker.log'}")
         if lost.is_set():raise RuntimeError('Coordinator rejected lease; stopped this worker')
-        task=snapshot(lease_dir,original,code)
-        adopt_session(workspace, task)
+        snapshot_task=snapshot(lease_dir,task,code)
+        adopt_session(workspace, snapshot_task)
         export_transcript(workspace.session)
-        if (workspace.session/'metadata').is_dir():
-            print(f"[files] Subtitles/transcripts saved in: {workspace.session/'metadata'}",flush=True)
-        after = workspace.scan(('session',))
+        after = workspace.scan()
         changed = sorted(name for name, signature in after.items() if before.get(name) != signature)
         deleted = sorted(name for name in before if name not in after)
-        output_mb = sum(after[name][0] for name in changed) / 2**20
+        ran = [s['name'] for s in snapshot_task['stages']
+               if s['status'] == 'succeeded' and statuses.get(s['name']) != 'succeeded']
+        workspace.drop(deleted)
+        drive_note = ''
+        if ran:
+            # Record before finishing: a lost finish response must not orphan committed outputs.
+            workspace.own(ran[-1], token, {name: after[name][0] for name in changed})
+            workspace.save()
+            if drive:
+                saved = time.monotonic()
+                files = sorted(workspace.stages[ran[-1]]['files'])
+                try:
+                    drive.save(ran[-1], token, [(name, workspace.path(name)) for name in files])
+                    prune_drive(drive.root, original['id'])
+                    drive_note = (f"; Drive checkpoint {len(files)} files "
+                                  f"({sum(after[n][0] for n in files)/2**20:.1f} MiB) {time.monotonic()-saved:.1f}s")
+                except (OSError, ValueError) as exc:
+                    drive_note = f'; Drive checkpoint failed ({type(exc).__name__})'
+                    print(f'[drive] Checkpoint for {ran[-1]} not saved ({exc}); a lost runtime will re-run it', flush=True)
+        # Only what the local GUI shows goes back; failed stages send nothing.
+        gui_changed = [name for name in changed if gui_file(name)] if ran else []
+        gui_deleted = [name for name in deleted if gui_file(name)] if ran else []
+        output_mb = sum(after[name][0] for name in gui_changed) / 2**20
         archive = lease_dir/'output.zip'
-        if changed:
-            pack_files(archive, [(name, workspace.path(name)) for name in changed])
+        uploaded = time.monotonic()
+        if gui_changed:
+            pack_files(archive, [(name, workspace.path(name)) for name in gui_changed])
             upload(client, prefix, archive)
         upload_done = time.monotonic()
-        rate = f', {output_mb/(upload_done-stage_done):.1f} MiB/s' if changed and upload_done > stage_done else ''
-        say(f'[transfer] Output: {len(changed)} files ({output_mb:.1f} MiB), {len(deleted)} deleted, '
-            f'packed and uploaded in {upload_done-stage_done:.1f}s{rate}')
+        rate = f', {output_mb/(upload_done-uploaded):.1f} MiB/s' if gui_changed and upload_done > uploaded else ''
+        say(f'[transfer] Output: {len(changed)} files changed; {len(gui_changed)} for the GUI ({output_mb:.1f} MiB) '
+            f'uploaded in {upload_done-uploaded:.1f}s{rate}{drive_note}')
         try:
             while pending.lines:
                 pending.send(client,prefix,{})
         except httpx.HTTPError:
             pass
         stopped.set();thread.join(timeout=25)
-        report = (f'stage {stage_name}: input {len(needed)} files ({input_mb:.1f} MiB) {input_done-started:.1f}s; '
-                  f'process {stage_done-input_done:.1f}s; output {len(changed)} files ({output_mb:.1f} MiB) '
-                  f'{upload_done-stage_done:.1f}s{rate}')
-        result = commit(client, prefix, {'task': task, 'files': {name: after[name][0] for name in changed},
-                                         'deleted': deleted, 'report': report})
-        committed = result.get('files', {})
-        for name in deleted:
-            workspace.files.pop(name, None)
-        for name in changed:
-            if name in committed:
-                workspace.record(name, committed[name])
-            else:
-                workspace.files.pop(name, None)
-        workspace.save()
+        report = (f"stage {stage_name}: input {stats['drive']} Drive stages ({stats['drive_mb']:.1f} MiB) + "
+                  f"{stats['fetched']} GUI files ({stats['fetched_mb']:.1f} MiB) {input_done-started:.1f}s; "
+                  f'process {stage_done-input_done:.1f}s; GUI upload {len(gui_changed)} files ({output_mb:.1f} MiB) '
+                  f'{upload_done-uploaded:.1f}s{rate}{drive_note}')
+        result = commit(client, prefix, {'task': snapshot_task, 'files': {name: after[name][0] for name in gui_changed},
+                                         'deleted': gui_deleted, 'ran': ran, 'report': report})
         archive.unlink(missing_ok=True)
         print('Checkpoint returned:',result['status'],flush=True)
         print(f"[transfer] Commit {time.monotonic()-upload_done:.1f}s; stage round trip {time.monotonic()-started:.1f}s",flush=True)
@@ -435,7 +598,7 @@ def run_job(client, job):
 
 
 def prune_workspaces(current=None):
-    tasks = ROOT/'remote-runs'/'tasks'
+    tasks = workspace_root()
     if not tasks.is_dir():
         return
     def last_used(folder):
@@ -507,6 +670,6 @@ def main():
                 print('[worker] Lease did not complete:\n'+traceback.format_exc(),flush=True)
                 time.sleep(5)
             finally:
-                prune_workspaces(ROOT/'remote-runs'/'tasks'/job['task']['id'])
+                prune_workspaces(workspace_root()/job['task']['id'])
 
 if __name__=='__main__':main()

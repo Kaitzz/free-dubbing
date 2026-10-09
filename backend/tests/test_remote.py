@@ -33,11 +33,12 @@ def upload(worker,job,root,files):
     response=worker.put(f"/api/colab-worker/{job['lease']}/output",params={'offset':0},content=archive.read_bytes())
     assert response.status_code==200
 
-def finish_payload(job,status,files=None,deleted=(),succeeded=()):
+def finish_payload(job,status,files=None,deleted=(),succeeded=(),ran=()):
     task=json.loads(json.dumps(job['task']));task['status']=status
     for s in task['stages']:
         if s['name'] in succeeded:s['status']='succeeded'
-    return {'task':task,'files':{name:len(data) for name,data in (files or {}).items()},'deleted':list(deleted)}
+    return {'task':task,'files':{name:len(data) for name,data in (files or {}).items()},'deleted':list(deleted),
+            'ran':list(ran)}
 
 def commit(worker,job,root,status,files=None,deleted=(),succeeded=()):
     if files:upload(worker,job,root,files)
@@ -150,6 +151,27 @@ def test_commit_failure_fails_task_with_reason_and_cleans_up(setup):
     assert not (config.DATA_DIR/'remote'/job['lease']).exists()
     assert 'Checkpoint commit failed' in database.log_path(task_id).read_text()
 
+def test_stage_versions_follow_the_lease_that_ran_the_stage(setup):
+    _,worker,_=setup
+    database.create_task('https://www.youtube.com/watch?v=abcdefghijk')
+    first=claim(worker)
+    assert first['stage_leases']=={}
+    payload=finish_payload(first,'paused',succeeded={'download'},ran=['download'])
+    assert worker.post(f"/api/colab-worker/{first['lease']}/finish",json=payload).status_code==200
+    second=claim(worker)
+    assert second['stage_leases']=={'download':first['lease']}
+    # A worker that lost download's output re-ran it: the new lease names the checkpoint.
+    payload=finish_payload(second,'paused',succeeded={'download','separate'},ran=['download'])
+    assert worker.post(f"/api/colab-worker/{second['lease']}/finish",json=payload).status_code==200
+    assert claim(worker)['stage_leases']=={'download':second['lease']}
+
+def test_finish_rejects_unknown_stage_in_ran(setup):
+    _,worker,_=setup
+    database.create_task('https://www.youtube.com/watch?v=abcdefghijk')
+    job=claim(worker)
+    payload=finish_payload(job,'paused',succeeded={'download'},ran=['bogus'])
+    assert worker.post(f"/api/colab-worker/{job['lease']}/finish",json=payload).status_code==422
+
 def test_finish_rejects_paths_outside_the_session(setup):
     _,worker,root=setup
     database.create_task('https://www.youtube.com/watch?v=abcdefghijk')
@@ -236,10 +258,14 @@ def test_deleting_task_removes_its_remote_checkpoints(setup):
     browser,worker,root=setup
     task_id=database.create_task('https://www.youtube.com/watch?v=abcdefghijk',execution_mode='manual')
     job=claim(worker)
-    commit(worker,job,root,'paused',{'session/media/video_source.mp4':b'video'},succeeded={'download'})
+    upload(worker,job,root,{'session/metadata/ytdlp_info.json':b'{}'})
+    payload=finish_payload(job,'paused',{'session/metadata/ytdlp_info.json':b'{}'},succeeded={'download'},ran=['download'])
+    assert worker.post(f"/api/colab-worker/{job['lease']}/finish",json=payload).status_code==200
     legacy=config.WORKFOLDER/'_remote'/task_id/('e'*32)/'session';legacy.mkdir(parents=True)
     assert browser.delete(f'/api/tasks/{task_id}').status_code==204
     assert not (config.WORKFOLDER/'_remote'/task_id).exists()
+    with database.connect() as c:
+        assert not c.execute('SELECT 1 FROM remote_stage_versions WHERE task_id=?',(task_id,)).fetchone()
 
 
 def test_custom_password_persists_and_rejects_invalid_values(setup):

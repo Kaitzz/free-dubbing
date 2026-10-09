@@ -41,6 +41,21 @@ def collect_artifact_paths(session: Path, from_stage: str, source: SourceConfig)
     return paths
 
 
+def owner_stage(relative: str, target_language: str) -> str:
+    """Stage whose redo removes this session file; the most specific path wins."""
+    name = relative.rsplit("/", 1)[-1]
+    if relative.startswith("metadata/") and (
+        name == f"translation.{target_language}.json" or (name.startswith("subtitles.") and name.endswith(".srt"))
+    ):
+        return "translate"
+    best, length = "download", -1
+    for stage, paths in STAGE_OWN_ARTIFACTS.items():
+        for path in paths:
+            if (relative == path or relative.startswith(path + "/")) and len(path) > length:
+                best, length = stage, len(path)
+    return best
+
+
 def remove_stage_artifacts(session: Path, from_stage: str, source: SourceConfig) -> None:
     for path in collect_artifact_paths(session, from_stage, source):
         if path.is_dir():

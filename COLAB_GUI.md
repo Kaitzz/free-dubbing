@@ -13,7 +13,10 @@
 1. 首次将 data/gui/Dubbing_Launcher.ipynb 上传到 Colab 并保存为私有 Drive 副本。选择 GPU，运行全部单元。以后复用这一个启动壳，它自动获取 GitHub 最新工作 Notebook 和匹配源码。
 2. 安装与预检沿用已验证的配置。MiniMax 密钥通过 Colab Secrets 提供，不传输本机 API 密钥。
 3. 连接密码为固定 8 位数字，仅在本机 GUI 中主动保存新密码时才改变。私有启动壳的 DUBBING_PASSWORD 填相同值，无需 DUBBING_WORKER_TOKEN Secret。MiniMax API 仍使用 MINIMAX_API_KEY Secret。
-4. 运行领取任务单元，回到 GUI 创建任务、查看进度、继续/重做、播放/下载视频。
+4. 运行到 Google Drive 单元时，在弹窗中授权访问当前 Colab 账号的 Drive（每个运行时一次）。
+5. 运行领取任务单元，回到 GUI 创建任务、查看进度、继续/重做、播放/下载视频。
+
+换用另一个 Google 账号跑 Colab 时：用该账号打开 Colab，上传 data/gui/Dubbing_Launcher.ipynb 并另存到该账号的 Drive；在该账号的 Colab Secrets 中重新添加 MINIMAX_API_KEY（必需）以及 YOUTUBE_COOKIES、HF_TOKEN（可选），并开启 Notebook access——Secrets 按账号保存，不会随 Notebook 带过去。阶段检查点会写入这个账号的 Drive。
 
 用户已授权任务视频、阶段音频和字幕传入自己的 Colab并回传结果。仅 YouTube 下载阶段会发送 GUI 保存的 YouTube Cookie；本机 API 密钥不传输。
 YouTube 视频由 Colab 下载，Cookie 在 GUI 设置中粘贴更新即可；不能使用本机代理端口。
@@ -21,12 +24,13 @@ GUI 中翻译地址/模型/并发会传给 worker；GUI 密钥只用于本机功
 
 ## 运行机制与边界
 
-一次领取一个阶段，完成后回传该阶段的产物，再领取下一阶段。自动模式连续执行，手动模式等待 GUI 继续。
-按阶段传输：Colab 为每个任务保留一份工作目录（`remote-runs/tasks/<任务>/`，最多保留 3 个任务），同一运行时内后续阶段不再下载任何文件；每个阶段只上传本阶段新增或改动的文件（不压缩，按 64 MiB 分块，可断点重传）。本机每个任务只保留一份 session（`workfolder/_remote/<任务>/session`），不再按阶段复制。换了新的 Colab 运行时，会一次性下载之前阶段的产物再继续。传输不做内容哈希，按文件大小和修改时间判断变化。
+一次领取一个阶段，完成后提交该阶段，再领取下一阶段。自动模式连续执行，手动模式等待 GUI 继续。
+完整的中间产物（人声/背景音、分段音频、配音片段、配音音轨、原视频）只留在 Colab：运行时磁盘上每个任务一份工作目录（`/content/dubbing-workspace/tasks/<任务>/`，最多保留 3 个任务），并且每个阶段完成后整体打包写入当前账号 Google Drive 的 `MyDrive/free-dubbing/tasks/<任务>/`（每阶段一个不压缩的 zip，默认保留最近 20 个任务，`DUBBING_DRIVE_KEEP_TASKS` 可调）。本机只接收 GUI 用得到的文件：成品视频、封面和 `metadata/` 下的字幕与文本结果，每个任务一份 session（`workfolder/_remote/<任务>/session`）。
+换了新的 Colab 运行时，worker 先从 Drive 恢复之前完成的阶段；Drive 上没有的，从本机取回文本结果（识别、翻译等不用重做）；仍然缺的音频阶段会自动重跑。没有挂载 Drive 时 worker 照常运行，只是运行时丢失后音频阶段要重跑。重做或重跑任务后，旧的检查点不会被误用（本机记录每个阶段由哪次领取完成）。传输不做内容哈希。
 临时 Tunnel 不支持 SSE，这里使用轮询和心跳。网络错误会自动重试；单个阶段失败不会让 worker 退出，会继续领取下一个任务。
 断线约 3 分钟后任务标记失败；已收到的检查点保留，可通过 GUI 恢复，迟到的 lease 不能覆盖新任务。
 本机与 Colab 必须使用同一传输协议版本：Colab 是新代码而本机服务没重启时，worker 会提示重启 `start_colab_gui.ps1` 并每 30 秒重试，不会退回整包传输；本机是新代码而 Colab 是旧代码时，领取会被拒绝，需要重新运行启动 Notebook。
-本机服务启动时会删除 `data/remote/` 下不属于进行中 lease 的传输临时文件。旧版本按阶段复制的 `workfolder/_remote/<任务>/<lease>/session` 不会自动删除；删除或重跑任务时会整体删除该任务的 `_remote/<任务>` 目录。
+本机服务启动时会删除 `data/remote/` 下不属于进行中 lease 的传输临时文件。旧任务在本机仍保留完整 session（`workfolder/_remote/<任务>/<lease>/session`），恢复这些任务时 worker 会从本机取回所需文件；删除或重跑任务时会整体删除该任务的 `_remote/<任务>` 目录。Drive 上删除的检查点会进入 Drive 回收站，清空后才释放空间。
 原先手工 notebook 任务不会自动出现在本机数据库中；GUI 任务需要从网页创建。
 Colab 计算单元需保持运行。本机需保持联网；本实现不会规避 Colab 的使用限制。
 
@@ -58,9 +62,9 @@ Worker 默认将 Demucs 外层音频分块设为 180 秒（原为 60 秒），�
 
 VoxCPM 现默认使用固定参考缓存、8 步推理和温和响度匹配；仍关闭首次编译预热。
 
-Notebook 只显示阶段消息、警告和错误，不再显示模型的逐帧进度条。完整子进程日志位于打印出的 Colab `remote-runs/<lease>/worker.log`，随 Colab 运行时销毁，不写入 GitHub。失败时会显示最后 60 行。GUI 仍通过心跳更新阶段进度。
+Notebook 只显示阶段消息、警告和错误，不再显示模型的逐帧进度条。完整子进程日志位于打印出的 Colab `.../tasks/<任务>/leases/<lease>/worker.log`，随 Colab 运行时销毁，不写入 GitHub。失败时会显示最后 60 行。GUI 仍通过心跳更新阶段进度。
 
-每个阶段的输入下载、子进程运行、产物上传和本机提交的耗时与大小会写入本机任务日志（`[transfer]` 行）；GUI 中的阶段计时只含子进程内的运行时间。Colab 转发的每行日志带 Colab 端时间戳，重发的批次会去重。
+每个阶段从 Drive 恢复、从本机取回、子进程运行、Drive 检查点、回传 GUI 文件和本机提交的耗时与大小会写入本机任务日志（`[transfer]` 行）；GUI 中的阶段计时只含子进程内的运行时间。Colab 转发的每行日志带 Colab 端时间戳，重发的批次会去重。
 
 
 可选：在 Colab 左侧 Secrets 新建 `HF_TOKEN`，填入 Hugging Face 的 Read token，并开启该启动 Notebook 的访问权限。工作 Notebook 自动读取并通过环境变量传给 Worker 及模型子进程；不需要更换启动壳。未配置时继续匿名访问，已配置但未授权时提示开启权限。此 token 用于 Hugging Face 下载认证，不会加速 GPU 推理，也不用于 ModelScope 下载。
