@@ -34,7 +34,9 @@ def test_manual_vtt_strips_markup_and_keeps_timestamps():
     with pytest.raises(ValueError):parse_captions('{"events":[]}',"json3")
 
 
-def test_optional_assets_failure_falls_back_and_cover_is_saved(tmp_path):
+def test_optional_assets_failure_falls_back_and_cover_is_saved(tmp_path, monkeypatch):
+    from backend.app.adapters import online_assets
+    monkeypatch.setattr(online_assets, '_image_size', lambda data:(1920,1080))
     (tmp_path/"metadata").mkdir();(tmp_path/"media").mkdir()
     class Ydl:
         def urlopen(self,url):
@@ -135,3 +137,34 @@ def test_captions_real_translation_artifact_and_audio_slice_contract(monkeypatch
 def test_partial_vtt_is_rejected_instead_of_losing_a_cue():
     with pytest.raises(ValueError):
         parse_captions('WEBVTT\n\n00:00.000 --> 00:01.000\nhello\n\nBAD --> 00:02.000\nworld\n','vtt')
+
+
+def test_cover_prefers_hd_from_unsorted_raw_metadata_and_upgrades_old(tmp_path,monkeypatch):
+    from backend.app.adapters import online_assets as a
+    media=tmp_path/'media';media.mkdir()
+    low=b'\xff\xd8\xfflow'; high=b'\xff\xd8\xffhigh'
+    (media/'thumbnail.jpg').write_bytes(low)
+    monkeypatch.setattr(a,'_image_size',lambda data:(120,90) if data==low else (1920,1080))
+    requested=[]
+    class Ydl:
+        def urlopen(self,url):
+            requested.append(url)
+            return io.BytesIO(high if 'maxresdefault' in url else low)
+    info={'thumbnail':'https://example.test/maxresdefault.jpg','thumbnails':[
+        {'url':'https://example.test/maxresdefault.jpg','width':1920,'height':1080},
+        {'url':'https://example.test/3.jpg'}]}
+    a.download_cover(Ydl(),info,tmp_path)
+    assert requested==['https://example.test/maxresdefault.jpg']
+    assert (media/'thumbnail.jpg').read_bytes()==high
+
+
+def test_cover_rejects_low_res_placeholder_as_hd_and_tries_next(tmp_path,monkeypatch):
+    from backend.app.adapters import online_assets as a
+    (tmp_path/'media').mkdir()
+    low=b'\xff\xd8\xfflow';high=b'\xff\xd8\xffhigh'
+    monkeypatch.setattr(a,'_image_size',lambda data:(120,90) if data==low else (1280,720))
+    class Ydl:
+        def urlopen(self,url):return io.BytesIO(low if 'maxres' in url else high)
+    a.download_cover(Ydl(),{'thumbnails':[{'url':'https://example.test/maxresdefault.jpg'},
+                                        {'url':'https://example.test/hq720.jpg'}]},tmp_path)
+    assert (tmp_path/'media/thumbnail.jpg').read_bytes()==high

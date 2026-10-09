@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import subprocess
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -101,23 +102,91 @@ def _fetch(ydl, url, limit):
     return data
 
 
+def _thumbnail_candidates(info):
+    thumbs = list(info.get("thumbnails") or [])
+    if info.get("thumbnail"):
+        thumbs.append({"url": info["thumbnail"]})
+    def rank(thumb):
+        url = thumb.get("url", "")
+        name = Path(urlparse(url).path).stem
+        # These are cover variants; numbered thumbnails are sampled video frames.
+        tiers = {"maxresdefault": 6, "hq720": 5, "sddefault": 4,
+                 "hqdefault": 3, "mqdefault": 2, "default": 1}
+        area = (thumb.get("width") or 0) * (thumb.get("height") or 0)
+        return (tiers.get(name, 0), area, (thumb["preference"] if thumb.get("preference") is not None else -100),
+                url == info.get("thumbnail"))
+    seen = set()
+    for thumb in sorted(thumbs, key=rank, reverse=True):
+        url = thumb.get("url")
+        if url and url not in seen:
+            seen.add(url)
+            yield thumb
+
+
+def _image_size(data):
+    from ..config import ffprobe_binary
+    result = subprocess.run([ffprobe_binary(), "-v", "error", "-i", "pipe:0",
+                             "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                             "-of", "json"], input=data, capture_output=True, timeout=10)
+    if result.returncode:
+        raise ValueError("Cannot decode thumbnail")
+    stream = json.loads(result.stdout)["streams"][0]
+    width, height = int(stream["width"]), int(stream["height"])
+    if width <= 0 or height <= 0:
+        raise ValueError("Invalid thumbnail dimensions")
+    return width, height
+
+
+def download_cover(ydl, info, session):
+    media = session / "media"
+    best = None
+    # Existing low-resolution covers can be upgraded without re-downloading video.
+    for path in media.glob("thumbnail.*"):
+        if path.suffix not in {".jpg", ".png", ".webp"}:
+            continue
+        try:
+            size = _image_size(path.read_bytes())
+            if min(size) >= 720:
+                return
+        except Exception:
+            pass
+    for thumb in list(_thumbnail_candidates(info))[:8]:
+        try:
+            data = _fetch(ydl, thumb["url"], 10 * 1024 * 1024)
+            ext = ("jpg" if data.startswith(b"\xff\xd8\xff") else
+                   "png" if data.startswith(b"\x89PNG\r\n\x1a\n") else
+                   "webp" if data[:4] == b"RIFF" and data[8:12] == b"WEBP" else None)
+            if not ext:
+                continue
+            width, height = _image_size(data)
+            if best is None or width*height > best[0]:
+                best = (width*height, data, ext, width, height)
+            if min(width, height) >= 720:
+                break
+        except Exception:
+            continue
+    if best:
+        _, data, ext, width, height = best
+        target = media / f"thumbnail.{ext}"
+        # Do not replace a usable larger image with a smaller fallback.
+        for previous in media.glob("thumbnail.*"):
+            if previous.suffix in {".jpg", ".png", ".webp"}:
+                try:
+                    w, h = _image_size(previous.read_bytes())
+                    if w*h > width*height:
+                        return
+                except Exception:
+                    pass
+        target.write_bytes(data)
+        for previous in media.glob("thumbnail.*"):
+            if previous != target and previous.suffix in {".jpg", ".png", ".webp"}:
+                previous.unlink()
+        print(f"[download] Cover saved: {width}x{height}", flush=True)
+
+
 def download_assets(ydl, info, session: Path, language):
     media, metadata = session / "media", session / "metadata"
-    if not any(media.glob("thumbnail.*")):
-        thumbs = info.get("thumbnails") or ([{"url": info["thumbnail"]}] if info.get("thumbnail") else [])
-        for thumb in list(reversed(thumbs))[:3]:
-            try:
-                data = _fetch(ydl, thumb["url"], 10 * 1024 * 1024)
-                ext = ("jpg" if data.startswith(b"\xff\xd8\xff") else
-                       "png" if data.startswith(b"\x89PNG\r\n\x1a\n") else
-                       "webp" if data[:4] == b"RIFF" and data[8:12] == b"WEBP" else None)
-                if not ext:
-                    continue
-                (media / f"thumbnail.{ext}").write_bytes(data)
-                print("[download] Cover saved", flush=True)
-                break
-            except Exception:
-                continue
+    download_cover(ydl, info, session)
     if (metadata / "source_subtitles.json").exists():
         return
     # Try alternate encodings when a track cannot be parsed without losing text.
