@@ -23,7 +23,7 @@ def rows(items):
                               for x in items]}
 
 
-def test_100_segments_one_request_reordered_output(monkeypatch):
+def test_100_segments_bounded_batches_reordered_output(monkeypatch):
     calls = []
     def fake(client, model, system, user):
         items = json.loads(user)["items"]
@@ -32,7 +32,7 @@ def test_100_segments_one_request_reordered_output(monkeypatch):
         return rows(list(reversed(items)))
     texts = [f"s{i}" for i in range(100)]
     result = run(monkeypatch, fake, texts)
-    assert len(calls) == 1
+    assert [len(items) for items in calls] == [50, 50]
     assert [x.dst for x in result] == ["译:" + x for x in texts]
 
 
@@ -79,7 +79,7 @@ def test_limits_create_smaller_batches(monkeypatch):
         calls.append(items)
         return rows(items)
     run(monkeypatch, fake, ["x"] * 101)
-    assert [len(x) for x in calls] == [100, 1]
+    assert [len(x) for x in calls] == [50, 50, 1]
     calls.clear()
     run(monkeypatch, fake, ["x" * 7000] * 2)
     assert [len(x) for x in calls] == [1, 1]
@@ -141,7 +141,7 @@ def test_sparse_retry_keeps_neighbors_and_single_item_recovers(monkeypatch):
         assert [item['id'] for item in request['context']]==[58,59,61,62]
         return {'translations':[{'id':1,'dst':'wrong ID','audio_mode':'tts'}]}
     output=run(monkeypatch,fake,[f's{i}' for i in range(1,74)])
-    assert len(calls)==3
+    assert len(calls)==4
     assert len(output)==73
     assert output[59].dst=='向特定的人指出这件事可能会'
     assert output[58].dst=='译:s59' and output[60].dst=='译:s61'
