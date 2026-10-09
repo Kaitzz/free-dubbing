@@ -107,6 +107,8 @@ def test_bad_json3_tries_vtt_for_same_manual_track(tmp_path):
             return io.BytesIO(b'WEBVTT\n\n00:00.000 --> 00:01.000\nhello\n')
     download_assets(Ydl(),{'subtitles':{'en':[track(url='https://example.test/json3'),track('vtt','https://example.test/vtt')]}},tmp_path,'en')
     assert json.loads((tmp_path/'metadata/source_subtitles.json').read_text())['subtitle_source']['kind']=='manual'
+    assert (tmp_path/'metadata/raw_subtitles/manual.en.json3').is_file()
+    assert (tmp_path/'metadata/raw_subtitles/manual.en.vtt').is_file()
 
 
 def test_captions_real_translation_artifact_and_audio_slice_contract(monkeypatch,tmp_path):

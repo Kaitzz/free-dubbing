@@ -83,3 +83,6 @@ Notebook 只显示阶段消息、警告和错误，不再显示模型的逐帧�
 `VOXCPM_INFERENCE_TIMESTEPS=8` 为新默认，`VOXCPM_CFG_VALUE=2.0` 保持不变。`VOXCPM_MATCH_LOUDNESS=true` 对新生成音频进行有效帧 RMS 匹配（目标约 -20 dBFS，常规增益限制 ±4 dB，峰值限制 -1 dBFS），不修改时长，跳过近乎静音内容，不处理原声保留片段。这不是 LUFS 标准化，也不能保证消除全部听感或口音差异。
 
 参考文件在 `tmp/tts_references`，随从配音阶段重跑一起清理。已有配音缓存不会自动覆写或重复调整音量；比较新旧效果应从“生成配音”重跑及其后续阶段。全部配音缓存存在时无需重新加载模型。若需旧模式，可设 `VOXCPM_REFERENCE_MODE=segment`、`VOXCPM_INFERENCE_TIMESTEPS=10`、`VOXCPM_MATCH_LOUDNESS=false`。环境变量显式配置优先于默认值。
+
+
+Colab 每阶段的 `workfolder/.../metadata/` 保留字幕产物：下载原始 CC 位于 `raw_subtitles/`（包括取回后解析失败的文件），清理后 CC 为 `source_subtitles.json/.srt`，识别/分句为 `asr.json`、`asr_fixed.json`。Worker 额外导出 `transcript.txt/.srt`，优先采用分句结果，并打印目录。这些文件随检查点回传本机，翻译失败也保留。Colab 运行时删除后 `/content` 文件会消失，尚未自动挂载 Google Drive。

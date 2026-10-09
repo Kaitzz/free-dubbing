@@ -70,3 +70,14 @@ def test_pending_logs_retain_adjacent_events_and_retry_failed_send():
         logs.send(client,"/worker",{})
     assert calls[0]['log']==calls[1]['log']=="Task started\n[tts] Started"
     assert not logs.lines
+
+
+def test_transcript_export_prefers_fixed_and_retains_source(tmp_path):
+    import json
+    metadata=tmp_path/'metadata';metadata.mkdir()
+    for name,text in [('asr.json','raw'),('asr_fixed.json','fixed')]:
+        (metadata/name).write_text(json.dumps({'result':{'utterances':[{'start_time':1000,'end_time':2500,'text':text}]}}))
+    colab_worker.export_transcript(tmp_path)
+    assert (metadata/'transcript.txt').read_text()=='fixed\n'
+    assert '00:00:01,000 --> 00:00:02,500' in (metadata/'transcript.srt').read_text()
+    assert 'raw' in (metadata/'asr.json').read_text()

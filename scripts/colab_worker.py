@@ -55,6 +55,25 @@ def console_line(line):
             or any(word in value.lower() for word in ('warning', 'error', 'failed', 'traceback')))
 
 
+def export_transcript(session):
+    """Human-readable copies alongside the canonical ASR/CC JSON artifacts."""
+    metadata = session / "metadata"
+    source = next((metadata/name for name in ("asr_fixed.json", "asr.json", "source_subtitles.json")
+                   if (metadata/name).is_file()), None)
+    if source is None:
+        return
+    try:
+        from backend.app.adapters.ffmpeg import _srt_time
+        rows = json.loads(source.read_text(encoding="utf-8"))["result"]["utterances"]
+        text = "\n".join(row["text"] for row in rows) + "\n"
+        srt = "\n\n".join(f"{index}\n{_srt_time(int(row['start_time']))} --> {_srt_time(int(row['end_time']))}\n{row['text']}"
+                             for index, row in enumerate(rows, 1)) + "\n"
+        (metadata / "transcript.txt").write_text(text, encoding="utf-8")
+        (metadata / "transcript.srt").write_text(srt, encoding="utf-8")
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        print(f"[files] Transcript export unavailable ({type(exc).__name__}); canonical JSON retained", flush=True)
+
+
 class PendingLogs:
     """Batch messages without dropping adjacent phase transitions on throttling."""
     def __init__(self):
@@ -172,6 +191,9 @@ def run_job(client, job):
         task=snapshot(folder,original,code)
         session=Path(task['session_path']) if task.get('session_path') else work/'session'
         if not session.resolve().is_relative_to(work.resolve()):raise ValueError('Invalid worker session')
+        export_transcript(session)
+        if (session/'metadata').is_dir():
+            print(f"[files] Subtitles/transcripts saved in: {session/'metadata'}",flush=True)
         output=folder/'output.zip'
         pack(output,{'session':session})
         with output.open('rb') as f:

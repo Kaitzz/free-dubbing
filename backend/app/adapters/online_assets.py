@@ -128,6 +128,10 @@ def download_assets(ydl, info, session: Path, language):
         attempted.add((kind, lang, track["ext"]))
         try:
             data = _fetch(ydl, track["url"], 8 * 1024 * 1024)
+            raw_dir = metadata / "raw_subtitles"
+            raw_dir.mkdir(exist_ok=True)
+            safe_language = re.sub(r"[^A-Za-z0-9_-]", "_", lang)
+            (raw_dir / f"{kind}.{safe_language}.{track['ext']}").write_bytes(data)
             rows = parse_captions(data.decode("utf-8-sig"), track["ext"], kind == "automatic")
             payload = {"subtitle_source": {"kind": kind, "language": lang}, "result": {
                 "text": " ".join(row[2] for row in rows),
