@@ -31,9 +31,9 @@ def test_subtitle_styles_match_backend_orientation_rules():
     portrait = ffmpeg.subtitle_style_for_orientation("portrait", "Noto Sans CJK SC", "zh")
     landscape = ffmpeg.subtitle_style_for_orientation("landscape", "Noto Sans CJK SC", "zh")
 
-    assert "FontSize=12" in portrait
+    assert "FontSize=11.04" in portrait
     assert "MarginV=70" in portrait
-    assert "FontSize=24" in landscape
+    assert "FontSize=22.08" in landscape
     assert "MarginV=5" in landscape
 
 
@@ -41,8 +41,8 @@ def test_subtitle_styles_use_smaller_size_for_english():
     portrait_en = ffmpeg.subtitle_style_for_orientation("portrait", "Arial", "en")
     landscape_en = ffmpeg.subtitle_style_for_orientation("landscape", "Arial", "en")
 
-    assert "FontSize=9" in portrait_en
-    assert "FontSize=18" in landscape_en
+    assert "FontSize=8.28" in portrait_en
+    assert "FontSize=16.56" in landscape_en
 
 
 def test_subtitle_filter_picks_chinese_font_for_zh_srt(monkeypatch, tmp_path):
@@ -102,7 +102,7 @@ def test_merge_video_burns_portrait_subtitles(monkeypatch, tmp_path):
     final_command = commands[-1]
     filter_arg = final_command[final_command.index("-vf") + 1]
     assert filter_arg.startswith("subtitles=filename='metadata/subtitles.zh.srt'")
-    assert "FontSize=12" in filter_arg
+    assert "FontSize=11.04" in filter_arg
     assert "MarginV=70" in filter_arg
     assert "-c:s" not in final_command
     assert cwd_values[-1] == session.resolve()

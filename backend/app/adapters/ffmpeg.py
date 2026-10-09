@@ -33,11 +33,11 @@ SUBTITLE_FONT_SIZES = {
 def _subtitle_style(font: str, size: int, margin_v: int) -> str:
     return (
         f"FontName={font},"
-        f"FontSize={size},"
+        f"FontSize={size * 0.92:g},"
         "PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&H00000000,"
+        "OutlineColour=&H00404040,"
         "BorderStyle=1,"
-        "Outline=2,"
+        "Outline=1.5,"
         "Alignment=2,"
         f"MarginV={margin_v}"
     )
