@@ -569,7 +569,7 @@ class PipelineRunner:
 
     def _tts(self, _: dict) -> None:
         import os
-        provider = os.getenv("DUBBING_TTS_PROVIDER", "minimax")
+        provider = os.getenv("DUBBING_TTS_PROVIDER", "voxcpm")
         if provider == "minimax":
             from .adapters.minimax_tts import generate_tts
         elif provider == "voxcpm":

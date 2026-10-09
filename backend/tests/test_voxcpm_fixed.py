@@ -50,7 +50,13 @@ def test_fixed_caches_once_per_speaker_and_uses_eight_steps(monkeypatch,tmp_path
     tensor=MagicMock();tensor.squeeze.return_value.cpu.return_value.numpy.return_value=tone(0.03)
     model.tts_model.generate_with_prompt_cache.return_value=(tensor,None,None)
     loader=MagicMock(return_value=model);monkeypatch.setattr(v,'_load_model',loader)
+    # Simulate an interrupted MiniMax stage in the shared output directory.
+    old=tmp_path/'segments/tts';old.mkdir(parents=True)
+    sf.write(old/'0002.wav',np.zeros(16000),16000)
+    (old/'0002.minimax.json').write_text('{}')
     output=v.generate_tts(translation,vocals,tmp_path,original_vocals_file=original)
+    assert not (output/'0002.minimax.json').exists()
+    assert np.any(sf.read(output/'0002.wav')[0])
     assert model.tts_model.build_prompt_cache.call_count==2
     calls=model.tts_model.generate_with_prompt_cache.call_args_list
     assert [c.kwargs['prompt_cache']['voice'] for c in calls]==['A','B','A']

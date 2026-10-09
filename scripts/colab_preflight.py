@@ -19,7 +19,7 @@ print('YouTube runtime:', node_version, 'yt-dlp:', importlib.metadata.version('y
 assert torch.cuda.is_available(), 'Select a Colab GPU runtime'
 print('GPU:', torch.cuda.get_device_name(0), 'torch:', torch.__version__)
 modules = ['funasr', 'demucs.api', 'openai', 'audiostretchy', 'requests']
-if os.getenv('DUBBING_TTS_PROVIDER','minimax') == 'voxcpm':
+if os.getenv('DUBBING_TTS_PROVIDER','voxcpm') == 'voxcpm':
     modules.append('voxcpm')
 for name in modules:
     importlib.import_module(name)

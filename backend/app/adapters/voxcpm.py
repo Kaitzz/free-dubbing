@@ -302,6 +302,18 @@ def generate_tts(
             progress_callback(100, "No TTS clips to generate")
         return output_dir
 
+    # A resumed MiniMax run may have populated these same WAV paths. Never
+    # mistake those clips for VoxCPM output after switching provider.
+    removed = 0
+    for index in range(1, total + 1):
+        marker = output_dir / f"{index:04d}.minimax.json"
+        if marker.is_file():
+            runtime_security.remove_private_file(output_dir / f"{index:04d}.wav", missing_ok=True)
+            runtime_security.remove_private_file(marker, missing_ok=True)
+            removed += 1
+    if removed:
+        print(f"[tts] Discarded {removed} MiniMax clips; regenerating with VoxCPM", flush=True)
+
     has_original_audio = any(is_original_audio(item) for item in items)
     if has_original_audio and original_vocals_file is None:
         raise ValueError("original_vocals_file is required for original audio items")

@@ -146,9 +146,10 @@ def run_job(client, job):
             YOUDUB_EXECUTION_BACKEND='local',MODEL_CACHE_DIR=model_cache_path(),
             DEVICE='cuda',FUNASR_DEVICE='cuda:0',DEMUCS_DEVICE='cuda',DEMUCS_CHUNK_SECONDS=os.getenv('DEMUCS_CHUNK_SECONDS','180'),
             DUBBING_VIDEO_ENCODER=os.getenv('DUBBING_VIDEO_ENCODER','auto'),
-            DUBBING_TTS_PROVIDER=os.getenv('DUBBING_TTS_PROVIDER','minimax'),
+            DUBBING_TTS_PROVIDER=os.getenv('DUBBING_TTS_PROVIDER','voxcpm'),
             MINIMAX_TTS_MODEL=os.getenv('MINIMAX_TTS_MODEL','speech-2.8-turbo'),
             MINIMAX_TTS_VOICE=os.getenv('MINIMAX_TTS_VOICE','Chinese_casual_instructor_nv1'),
+            VOXCPM_REFERENCE_MODE='fixed',
             VOXCPM_LOW_MEMORY_INIT='true',VOXCPM_OPTIMIZE='false',VOXCPM_LOAD_DENOISER='false',
             OPENAI_API_KEY=os.environ['OPENAI_API_KEY'],OPENAI_BASE_URL=settings['base_url'],
             OPENAI_MODEL=settings['model'],OPENAI_TRANSLATE_CONCURRENCY=settings['translate_concurrency'] or '2')
