@@ -713,3 +713,41 @@ def test_fallback_keeps_same_speaker_when_only_other_speaker_has_long_reference(
         inference_timesteps=10,
     )
     assert mock_tts_model.generate_with_prompt_cache.call_count == 2
+
+
+def test_final_original_tail_clamp_preserves_available_samples(tmp_path):
+    source = _make_synthetic_wav(tmp_path / "source.wav", duration_ms=5253)
+    output = tmp_path / "output.wav"
+    voxcpm_mod._write_original_target_audio(
+        output, {"start_time": 1620, "end_time": 6279}, source,
+        allow_tail_clamp=True,
+    )
+    original, rate = sf.read(source)
+    actual, _ = sf.read(output)
+    assert np.array_equal(actual, original[int(1.620 * rate):])
+
+
+def test_final_original_tail_clamp_rejects_large_overflow(tmp_path):
+    source = _make_synthetic_wav(tmp_path / "source.wav", duration_ms=1000)
+    with pytest.raises(ValueError, match="does not cover"):
+        voxcpm_mod._write_original_target_audio(
+            tmp_path / "output.wav", {"start_time": 500, "end_time": 3001},
+            source, allow_tail_clamp=True,
+        )
+
+
+@patch.object(voxcpm_mod, "_load_model")
+def test_resume_cached_tts_with_overrunning_final_original(mock_load, tmp_path):
+    session = tmp_path / "session"
+    cached = _make_synthetic_wav(session / "segments/tts/0001.wav")
+    before = cached.read_bytes()
+    source = _make_synthetic_wav(session / "media/audio_vocals.wav", duration_ms=5253)
+    translation = _write_translation_json(session / "metadata/translation.json", [
+        {"dst": "translated", "start_time": 0, "end_time": 1620},
+        {"dst": "", "start_time": 1620, "end_time": 6279},
+    ])
+    voxcpm_mod.generate_tts(translation, session / "segments/vocals", session,
+                          original_vocals_file=source)
+    mock_load.assert_not_called()
+    assert cached.read_bytes() == before
+    assert sf.info(session / "segments/tts/0002.wav").frames == (5253-1620)*16

@@ -226,6 +226,8 @@ def _write_original_target_audio(
     output_file: Path,
     item: dict,
     original_vocals_file: Path,
+    *,
+    allow_tail_clamp: bool = False,
 ) -> None:
     start = max(0, int(item.get("start_time", 0)))
     end = int(item.get("end_time", start))
@@ -247,7 +249,13 @@ def _write_original_target_audio(
         overflow_scaled = end * source.samplerate - source.frames * 1000
         if overflow_scaled > 0:
             if overflow_scaled >= source.samplerate:
-                raise ValueError(range_error)
+                # Source captions may linger just beyond EOF. Only the final
+                # segment may use this bounded tolerance; missing audio elsewhere
+                # still indicates a bad timeline or truncated source.
+                if not allow_tail_clamp or overflow_scaled > 2000 * source.samplerate:
+                    raise ValueError(range_error)
+                print(f"[tts] Final original-audio segment trimmed to audio EOF: "
+                      f"{end} -> {available_duration_ms:.3f} ms", flush=True)
             end_frame = source.frames
         if end_frame <= start_frame:
             raise ValueError(range_error)
@@ -298,13 +306,20 @@ def generate_tts(
     if has_original_audio and original_vocals_file is None:
         raise ValueError("original_vocals_file is required for original audio items")
 
+    # Prepare/validate original clips before loading the expensive TTS model.
+    latest_end = max(int(item.get("end_time", 0)) for item in items)
+    for index, item in enumerate(items, 1):
+        if is_original_audio(item):
+            assert original_vocals_file is not None
+            _write_original_target_audio(
+                output_dir / f"{index:04d}.wav", item, original_vocals_file,
+                allow_tail_clamp=(index == total and int(item.get("end_time", 0)) == latest_end),
+            )
+
     if all(is_original_audio(item) or (output_dir / f"{index:04d}.wav").is_file()
            for index, item in enumerate(items, 1)):
         for index, item in enumerate(items, start=1):
             output_file = output_dir / f"{index:04d}.wav"
-            if is_original_audio(item):
-                assert original_vocals_file is not None
-                _write_original_target_audio(output_file, item, original_vocals_file)
             if progress_callback:
                 progress = round(index / total * 100)
                 progress_callback(progress, f"Prepared {index}/{total} TTS clips")
@@ -333,8 +348,6 @@ def generate_tts(
     for index, item in enumerate(items, start=1):
         output_file = output_dir / f"{index:04d}.wav"
         if is_original_audio(item):
-            assert original_vocals_file is not None
-            _write_original_target_audio(output_file, item, original_vocals_file)
             if progress_callback:
                 progress = round(index / total * 100)
                 progress_callback(progress, f"Prepared {index}/{total} TTS clips")
