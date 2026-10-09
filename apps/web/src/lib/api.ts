@@ -102,6 +102,7 @@ export type TaskStage = {
 }
 
 export type Task = {
+  source_assets?: { thumbnail: boolean; "source-subtitles": boolean }
   id: string
   url: string
   title: string | null

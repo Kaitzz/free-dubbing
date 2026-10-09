@@ -163,3 +163,20 @@ describe("任务详情轮询", () => {
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100")
   })
 })
+
+
+it("shows downloaded cover and source captions in task details", async () => {
+  const task = { ...taskWithStatus("paused"), source_assets: { thumbnail: true, "source-subtitles": true } }
+  mocks.fetch.mockImplementation(async (input) => String(input).endsWith("/log")
+    ? new Response("") : jsonResponse(task))
+  vi.stubGlobal("fetch", mocks.fetch)
+  const params = Promise.resolve({ id: "task-race" })
+  await act(async () => {
+    render(<LanguageProvider><Suspense fallback={<div>loading</div>}><TaskDetailPage params={params} /></Suspense></LanguageProvider>)
+    await params
+  })
+  const image = await screen.findByRole("img", { name: "视频封面" })
+  expect(image).toHaveAttribute("src", "/api/tasks/task-race/source-asset/thumbnail")
+  expect(screen.getByRole("link", { name: "下载原文 CC 字幕（SRT）" }))
+    .toHaveAttribute("href", "/api/tasks/task-race/source-asset/source-subtitles?download=1")
+})

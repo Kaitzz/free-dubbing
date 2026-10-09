@@ -63,3 +63,12 @@ Notebook 只显示阶段消息、警告和错误，不再显示模型的逐帧�
 
 
 可选：在 Colab 左侧 Secrets 新建 `HF_TOKEN`，填入 Hugging Face 的 Read token，并开启该启动 Notebook 的访问权限。工作 Notebook 自动读取并通过环境变量传给 Worker 及模型子进程；不需要更换启动壳。未配置时继续匿名访问，已配置但未授权时提示开启权限。此 token 用于 Hugging Face 下载认证，不会加速 GPU 推理，也不用于 ModelScope 下载。
+
+
+## YouTube 封面和 CC
+
+新下载的任务会尝试保存视频封面及当前源语言的 CC（YouTube 任务当前配置为英语）。优先人工字幕，其次原语言自动字幕；排除带 `tlang` 的机器翻译字幕。无可用字幕、字幕下载失败或无法解析时继续 SenseVoice。素材下载复用 yt-dlp 的 Cookie、代理与网络会话配置。
+
+支持 JSON3 / VTT / SRT，自动字幕按重叠时间去除滚动重复文本，整理为不重叠的时间段，后续仍进行 MiniMax 翻译、配音及背景音分离。原文 CC 不走“用户上传的已翻译 SRT”路径。封面和清理后的原文 SRT 随任务检查点回传，在任务详情“原始素材”中预览或下载。
+
+已完成下载阶段的旧任务不会自动补抓；新建任务或从下载阶段重跑才启用素材获取。更新后需重启本机 GUI（运行 `scripts/start_colab_gui.ps1`），并重新运行启动 Notebook，才能同时使用界面与 Colab 的新功能。

@@ -172,12 +172,17 @@ def download_video(
     metadata_file = metadata_dir / "ytdlp_info.json"
     metadata_file.write_text(json.dumps(ydl.sanitize_info(info), ensure_ascii=False, indent=2), encoding="utf-8")
 
-    if video_file.exists() and video_file.stat().st_size > 0:
-        return session, info
-
-    _download_with_format_candidates(canonical_url, video_file, source, proxy_port)
+    if not (video_file.exists() and video_file.stat().st_size > 0):
+        _download_with_format_candidates(canonical_url, video_file, source, proxy_port)
 
     if not video_file.exists() or video_file.stat().st_size == 0:
         raise RuntimeError("yt-dlp finished without producing media/video_source.mp4")
 
+    if source.name == "youtube":
+        from .online_assets import download_assets
+        try:
+            with yt_dlp.YoutubeDL({**info_opts, "socket_timeout": 20}) as asset_ydl:
+                download_assets(asset_ydl, info, session, source.asr_language)
+        except Exception as exc:
+            print(f"[download] Optional assets unavailable ({type(exc).__name__}); continuing", flush=True)
     return session, info

@@ -435,6 +435,15 @@ class PipelineRunner:
             )
             return
 
+        source_cc = session / "metadata" / "source_subtitles.json"
+        if source_cc.is_file():
+            payload = _json.loads(source_cc.read_text(encoding="utf-8"))
+            self.artifacts.asr_file = session / "metadata" / "asr.json"
+            self.artifacts.asr_file.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            details = payload["subtitle_source"]
+            self.stage_message("asr", f"Used {details['kind']} source CC ({details['language']}); skipped SenseVoice")
+            return
+
         from .adapters.sensevoice_asr import recognize_speech
 
         vocals_file = _require(self.artifacts.vocals_file, "vocals_file")
@@ -469,6 +478,14 @@ class PipelineRunner:
                 "asr_fix",
                 f"Reused uploaded SRT subtitles ({len(sentences)} cues); skipped sentence splitting",
             )
+            return
+
+        asr_file = _require(self.artifacts.asr_file, "asr_file")
+        payload = _json.loads(asr_file.read_text(encoding="utf-8"))
+        if payload.get("subtitle_source"):
+            self.artifacts.asr_fixed_file = session / "metadata" / "asr_fixed.json"
+            self.artifacts.asr_fixed_file.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            self.stage_message("asr_fix", "Reused cleaned source CC timings; translation follows")
             return
 
         from .adapters.asr_sentence_fixer import fix_asr_sentences

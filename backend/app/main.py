@@ -526,7 +526,8 @@ def task_detail(task_id: str) -> dict:
     task = database.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
-    return task
+    return {**task, "source_assets": {key: _source_asset(task, key) is not None
+                                    for key in ("thumbnail", "source-subtitles")}}
 
 
 def _is_inside_workfolder(path: Path) -> bool:
@@ -648,6 +649,31 @@ def task_log(task_id: str) -> str:
         raise HTTPException(status_code=404, detail="Task not found.")
     path = database.log_path(task_id)
     return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def _source_asset(task: dict, name: str) -> Path | None:
+    if not task.get("session_path"):
+        return None
+    root = Path(task["session_path"])
+    paths = {"thumbnail": [root / "media" / f"thumbnail.{ext}" for ext in ("jpg", "png", "webp")],
+             "source-subtitles": [root / "metadata" / "source_subtitles.srt"]}
+    for path in paths.get(name, []):
+        if _is_inside_workfolder(path) and not path.is_symlink() and path.is_file():
+            return path
+    return None
+
+
+@app.get("/api/tasks/{task_id}/source-asset/{name}")
+def source_asset(task_id: str, name: str, download: bool = False) -> FileResponse:
+    task = database.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    path = _source_asset(task, name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Source asset is not available.")
+    media_type = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
+                  ".srt": "application/x-subrip"}[path.suffix]
+    return FileResponse(path, media_type=media_type, filename=path.name if download else None)
 
 
 @app.get("/api/tasks/{task_id}/artifact/final-video")

@@ -449,3 +449,24 @@ def test_cors_wraps_preflight_and_authentication_errors(client):
     assert unauthenticated.headers["access-control-allow-origin"] == origin
     assert unauthenticated.headers["access-control-allow-credentials"] == "true"
     assert "access-control-allow-origin" not in untrusted.headers
+
+
+def test_source_assets_require_auth_and_stay_in_workfolder(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(main,"WORKFOLDER",tmp_path/"work")
+    session=tmp_path/"work/session"
+    (session/"media").mkdir(parents=True)
+    (session/"metadata").mkdir()
+    (session/"media/thumbnail.jpg").write_bytes(b"image")
+    (session/"metadata/source_subtitles.srt").write_text("captions")
+    task_id=database.create_task("https://www.youtube.com/watch?v=abcdefghijk")
+    database.update_task(task_id,session_path=str(session))
+    url=f"/api/tasks/{task_id}/source-asset/thumbnail"
+    assert client.get(url).status_code==401
+    login(client)
+    assert client.get(url).content==b"image"
+    assert client.get(url+"?download=1").headers['content-disposition'].startswith('attachment')
+    assert client.get(f"/api/tasks/{task_id}").json()['source_assets']=={'thumbnail':True,'source-subtitles':True}
+    assert client.get(f"/api/tasks/{task_id}/source-asset/unknown").status_code==404
+    database.update_task(task_id,session_path=str(tmp_path))
+    (tmp_path/"media").mkdir();(tmp_path/"media/thumbnail.jpg").write_bytes(b"outside")
+    assert client.get(url).status_code==404
