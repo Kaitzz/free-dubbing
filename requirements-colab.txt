@@ -4,3 +4,4 @@ voxcpm==2.0.3
 
 # YouTube EJS requires Node >=22; installed in the isolated environment.
 nodejs-wheel>=22,<23
+huggingface_hub

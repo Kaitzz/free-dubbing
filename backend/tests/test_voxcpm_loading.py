@@ -28,3 +28,25 @@ def test_low_memory_init_restores_default_dtype(monkeypatch, tmp_path, fail):
     else:
         assert adapter._load_model() == 'loaded'
     assert dtype[0] == 'float32'
+
+
+def test_model_download_uses_hugging_face_and_separate_cache(monkeypatch, tmp_path, capsys):
+    calls = []
+    def download(**kwargs):
+        calls.append(kwargs)
+        return kwargs['local_dir']
+    monkeypatch.delenv('VOXCPM_MODEL_DIR', raising=False)
+    monkeypatch.delenv('VOXCPM_MODEL', raising=False)
+    monkeypatch.setenv('HF_TOKEN', 'test-private-token')
+    monkeypatch.setattr(adapter, 'MODEL_CACHE_DIR', tmp_path)
+    monkeypatch.setitem(sys.modules, 'huggingface_hub', SimpleNamespace(snapshot_download=download))
+    assert adapter._model_path() == tmp_path/'huggingface/OpenBMB__VoxCPM2'
+    assert calls == [dict(repo_id='OpenBMB/VoxCPM2',
+        local_dir=str(tmp_path/'huggingface/OpenBMB__VoxCPM2'),
+        endpoint='https://huggingface.co', token='test-private-token')]
+    assert 'test-private-token' not in capsys.readouterr().out
+
+
+def test_explicit_local_model_does_not_download(monkeypatch, tmp_path):
+    monkeypatch.setenv('VOXCPM_MODEL_DIR', str(tmp_path))
+    assert adapter._model_path() == tmp_path

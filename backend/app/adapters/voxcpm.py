@@ -43,10 +43,15 @@ def _model_path() -> Path:
         return Path(configured_dir).expanduser()
 
     model_id = os.getenv("VOXCPM_MODEL", "OpenBMB/VoxCPM2")
-    local_dir = MODEL_CACHE_DIR / model_id.replace("/", "__")
-    from modelscope import snapshot_download
+    local_dir = MODEL_CACHE_DIR / "huggingface" / model_id.replace("/", "__")
+    from huggingface_hub import snapshot_download
 
-    downloaded = snapshot_download(model_id, local_dir=str(local_dir))
+    print(f"[tts] Model source: Hugging Face ({model_id}); checking cache/download", flush=True)
+    downloaded = snapshot_download(
+        repo_id=model_id, local_dir=str(local_dir),
+        endpoint="https://huggingface.co",
+        token=os.getenv("HF_TOKEN") or None,
+    )
     return Path(downloaded)
 
 

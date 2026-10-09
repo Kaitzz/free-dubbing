@@ -21,3 +21,4 @@ audiostretchy
 numpy
 pytest
 httpx[socks]
+huggingface_hub
