@@ -56,6 +56,31 @@ class TranslationItem(BaseModel):
         return self
 
 
+
+_NONVERBAL = {
+    "music", "background music", "instrumental", "applause", "laughter", "laughing",
+    "laughs", "crying", "sobbing", "screaming", "scream", "sigh", "sighs",
+    "sighing", "gasp", "gasping", "breathing", "cough", "coughing", "sneezing",
+    "groaning", "grunting", "barking", "meowing", "silence", "音乐", "背景音乐",
+    "笑声", "笑", "哭声", "哭泣", "抽泣", "尖叫", "叹气", "喘息", "喘息声",
+    "咳嗽", "呻吟", "掌声", "音楽", "笑い声", "拍手",
+}
+
+
+def _allows_original(text: str) -> bool:
+    # Conservative allowlist: a model's generated sound label is not evidence
+    # that the source contains no speech. Mixed speech + labels must be dubbed.
+    cleaned = re.sub(r"\[([^\]]*)\]|\(([^)]*)\)|（([^）]*)）",
+                     lambda m: " " + next(g for g in m.groups() if g is not None) + " ", text)
+    cleaned = re.sub(r"[♪♫.,!?:;…。，！？、\s]+", " ", cleaned).strip().casefold()
+    return (not cleaned or cleaned in _NONVERBAL
+            or bool(re.fullmatch(r"(?:um+|uh+|hmm+|hm+|erm+|嗯+|呃+)(?: (?:um+|uh+|hmm+|hm+|erm+|嗯+|呃+))*", cleaned)))
+
+
+def _validate_source_mode(item: TranslationItem, source_text: str) -> None:
+    if item.audio_mode == "original" and not _allows_original(source_text):
+        raise ValueError("Spoken source text requires audio_mode tts and a nonempty translation")
+
 def list_models(*, base_url: str, api_key: str) -> list[str]:
     if not api_key:
         raise ValueError("OpenAI API key is not configured.")
@@ -195,6 +220,7 @@ def translate_sentence(
         try:
             data = _call_json(client, model, system, text)
             item = TranslationItem.model_validate(data)
+            _validate_source_mode(item, text)
             return item.model_copy(update={"dst": _post_process(item.dst, target_language)})
         except (json.JSONDecodeError, ValidationError, ValueError) as exc:
             last_error = exc
@@ -213,6 +239,9 @@ Use neighboring items for context, but translate each item separately: do not me
 split, omit or move meaning between IDs. Return every input ID exactly once.
 Return ONLY {"translations": [{"id": 1, "dst": "translation", "audio_mode": "tts"}]}.
 Each entry must obey the translation and audio_mode rules above. IDs must be integers.
+Spoken words, including unfinished sentences, must use tts with a real translation.
+Never replace speech with a music/sound label or empty text. original is only for
+explicit nonverbal source labels or standalone hesitation sounds, never dialogue.
 Never generate timestamps. Do not include explanations or markdown fences.
 """
 
@@ -244,7 +273,7 @@ def _chunks(items: list[dict]) -> list[list[dict]]:
     return batches
 
 
-def _validated_entries(data: dict, expected: set[int], language: str) -> dict[int, TranslationItem]:
+def _validated_entries(data: dict, expected: set[int], language: str, sources: dict[int, str] | None = None) -> dict[int, TranslationItem]:
     rows = data.get("translations")
     if not isinstance(rows, list):
         raise ValueError("Expected translations array")
@@ -262,7 +291,9 @@ def _validated_entries(data: dict, expected: set[int], language: str) -> dict[in
         seen.add(item_id)
         try:
             item = TranslationItem.model_validate(row)
-        except ValidationError:
+            if sources is not None:
+                _validate_source_mode(item, sources[item_id])
+        except ValueError:
             continue
         found[item_id] = item.model_copy(update={"dst": _post_process(item.dst, language)})
     for item_id in duplicate:
@@ -286,8 +317,8 @@ def _entry_issues(data: dict, pending: list[dict]) -> str:
         reason = "missing ID" if not matches else "duplicate ID"
         if len(matches) == 1:
             try:
-                TranslationItem.model_validate(matches[0])
-                reason = "invalid entry"
+                checked = TranslationItem.model_validate(matches[0])
+                reason = "spoken source wrongly marked original" if checked.audio_mode == "original" and not _allows_original(item["text"]) else "invalid entry"
             except ValidationError as exc:
                 reason = ", ".join(".".join(map(str,e["loc"]))+":"+e["type"]
                                    for e in exc.errors(include_input=False))
@@ -309,7 +340,7 @@ def _translate_chunk(items: list[dict], language: str, client: OpenAI,
         try:
             data = _call_json(client, model, retry_system,
                               json.dumps(request, ensure_ascii=False))
-            found.update(_validated_entries(data, {x["id"] for x in pending}, language))
+            found.update(_validated_entries(data, {x["id"] for x in pending}, language, {x["id"]: x["text"] for x in pending}))
             pending = [item for item in items if item["id"] not in found]
             if not pending:
                 return found
@@ -335,6 +366,7 @@ Use audio_mode original only for the nonverbal/filler cases allowed above.
                 if set(data) != {"dst", "audio_mode"}:
                     raise ValueError("Expected only dst and audio_mode in single-item response")
                 translated = TranslationItem.model_validate(data)
+                _validate_source_mode(translated, item["text"])
                 found[item["id"]] = translated.model_copy(update={"dst": _post_process(translated.dst, language)})
                 return found
             except ValidationError as exc:

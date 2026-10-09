@@ -152,3 +152,31 @@ def test_invalid_fields_have_actionable_diagnostics(monkeypatch,capsys):
     with pytest.raises(RuntimeError,match='ID 1'):
         run(monkeypatch,fake,['fragment'])
     assert 'Unresolved IDs: 1' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("text", ["anyone feeling attacked.", "want to remind you guys that this is", "[Music] hello", "（笑声）你好"])
+def test_speech_original_misclassification_retries(monkeypatch, text):
+    calls = []
+    def fake(client, model, system, user):
+        items = json.loads(user)["items"]
+        calls.append(items)
+        if len(calls) == 1:
+            return {"translations": [{"id": 1, "dst": "（音乐）", "audio_mode": "original"}]}
+        return rows(items)
+    result = run(monkeypatch, fake, [text])
+    assert len(calls) == 2
+    assert result[0].audio_mode == "tts"
+
+
+@pytest.mark.parametrize("text", ["[Music]", "(laughter)", "（音乐）", "um", "♪"])
+def test_explicit_nonverbal_original_allowed(text):
+    assert t._allows_original(text)
+
+
+def test_single_item_fallback_cannot_restore_spoken_original(monkeypatch):
+    def fake(client, model, system, user):
+        request = json.loads(user)
+        entry = {"dst": "", "audio_mode": "original"}
+        return entry if "item" in request else {"translations": [{"id": 1, **entry}]}
+    with pytest.raises(RuntimeError, match="requires audio_mode tts"):
+        run(monkeypatch, fake, ["anyone feeling attacked."])
