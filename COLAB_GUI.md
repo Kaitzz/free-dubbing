@@ -55,7 +55,7 @@ Worker 默认将 Demucs 外层音频分块设为 180 秒（原为 60 秒），�
 
 合成视频默认尝试 NVIDIA NVENC：先进行一次实际编码探测，失败则使用 CPU libx264 / veryfast；实际视频编码若失败也会退回 CPU。字幕仍在 CPU 上绘制。可用 `DUBBING_VIDEO_ENCODER=cpu` 恢复原来的 libx264 / fast。NVENC CQ 23 与 x264 CRF 23 并非相同的画质尺度，需用实际视频比较画质和文件体积。已混合成 AAC 的音轨直接复用，避免二次有损编码。
 
-VoxCPM 配音保持 10 步推理及原来的声音参考方式。此次没有降低配音质量参数，也没有启用编译预热。
+VoxCPM 现默认使用固定参考缓存、8 步推理和温和响度匹配；仍关闭首次编译预热。
 
 Notebook 只显示阶段消息、警告和错误，不再显示模型的逐帧进度条。完整子进程日志位于打印出的 Colab `remote-runs/<lease>/worker.log`，随 Colab 运行时销毁，不写入 GitHub。失败时会显示最后 60 行。GUI 仍通过心跳更新阶段进度。
 
@@ -72,3 +72,14 @@ Notebook 只显示阶段消息、警告和错误，不再显示模型的逐帧�
 支持 JSON3 / VTT / SRT，自动字幕按重叠时间去除滚动重复文本，整理为不重叠的时间段，后续仍进行 MiniMax 翻译、配音及背景音分离。原文 CC 不走“用户上传的已翻译 SRT”路径。封面和清理后的原文 SRT 随任务检查点回传，在任务详情“原始素材”中预览或下载。
 
 已完成下载阶段的旧任务不会自动补抓；新建任务或从下载阶段重跑才启用素材获取。更新后需重启本机 GUI（运行 `scripts/start_colab_gui.ps1`），并重新运行启动 Notebook，才能同时使用界面与 Colab 的新功能。
+
+
+## 配音一致性与速度
+
+默认 `VOXCPM_REFERENCE_MODE=fixed`：按已有 speaker 标签选择一段音量相对平稳、有效时长较长的参考，最多读取/保留 6 秒，排除静音与原声保留片段。选择依据是时长、有效帧比例、音量变化与削波比例，不是语义或口音识别。每个标签仅构建一次 prompt cache，并用于该标签的所有新配音。
+
+当前 SenseVoice/CC 没有可靠的多人分离，往往统一标为 speaker=1，因此本模式主要适合单人讲述；多人视频仍需要可靠说话人标签才能分别固定声音。缺少某标签的可用参考时明确报错，不借用其他人的参考。
+
+`VOXCPM_INFERENCE_TIMESTEPS=8` 为新默认，`VOXCPM_CFG_VALUE=2.0` 保持不变。`VOXCPM_MATCH_LOUDNESS=true` 对新生成音频进行有效帧 RMS 匹配（目标约 -20 dBFS，常规增益限制 ±4 dB，峰值限制 -1 dBFS），不修改时长，跳过近乎静音内容，不处理原声保留片段。这不是 LUFS 标准化，也不能保证消除全部听感或口音差异。
+
+参考文件在 `tmp/tts_references`，随从配音阶段重跑一起清理。已有配音缓存不会自动覆写或重复调整音量；比较新旧效果应从“生成配音”重跑及其后续阶段。全部配音缓存存在时无需重新加载模型。若需旧模式，可设 `VOXCPM_REFERENCE_MODE=segment`、`VOXCPM_INFERENCE_TIMESTEPS=10`、`VOXCPM_MATCH_LOUDNESS=false`。环境变量显式配置优先于默认值。

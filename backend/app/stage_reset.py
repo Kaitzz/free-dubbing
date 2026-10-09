@@ -14,7 +14,7 @@ STAGE_OWN_ARTIFACTS: dict[str, tuple[str, ...]] = {
     "asr_fix": ("metadata/asr_fixed.json",),
     "translate": ("metadata/translation_preprocess.json",),
     "split_audio": ("segments/vocals",),
-    "tts": ("segments/tts",),
+    "tts": ("segments/tts", "tmp/tts_references"),
     "merge_audio": ("tmp/audio_dubbing.wav", "metadata/timings.json", "segments/stretched"),
     "merge_video": ("tmp/audio_mixed.m4a", "media/video_final.mp4"),
 }

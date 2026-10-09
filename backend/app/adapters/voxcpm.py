@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 import soundfile as sf
 from pydub import AudioSegment
 
@@ -150,6 +151,69 @@ def _fallback_references(vocals_dir: Path, items: list[dict], min_ms: int) -> tu
     return fallbacks, global_fallback
 
 
+def match_loudness(wav, sample_rate):
+    """Gentle active-frame RMS matching, not LUFS normalization or compression."""
+    samples = np.asarray(wav, dtype=np.float32)
+    if not np.isfinite(samples).all():
+        raise ValueError("TTS returned non-finite audio")
+    if not samples.size:
+        raise ValueError("TTS returned empty audio")
+    mono = samples if samples.ndim == 1 else samples.mean(axis=-1)
+    frame = max(1, int(sample_rate * 0.02))
+    energies = np.array([np.mean(part.astype(np.float64)**2)
+                         for part in np.array_split(mono, max(1, len(mono)//frame))])
+    active = energies[energies >= max(1e-5, float(energies.max()) * 0.001)]
+    if not len(active):
+        return samples  # Never amplify silence or near-silence.
+    rms = float(np.sqrt(active.mean()))
+    gain_db = np.clip(20 * np.log10(0.1 / rms), -4.0, 4.0)
+    gain = min(10 ** (gain_db / 20), 10 ** (-1 / 20) / max(float(np.max(np.abs(samples))), 1e-9))
+    return samples * gain
+
+
+def _fixed_references(vocals_dir, items, session):
+    """Select one bounded, reasonably steady reference per existing speaker label."""
+    best = {}
+    speakers = {_speaker(item) for item in items if not is_original_audio(item)}
+    for index, item in enumerate(items, 1):
+        if is_original_audio(item):
+            continue
+        path = vocals_dir / f"{index:04d}.wav"
+        if not path.exists():
+            continue
+        with sf.SoundFile(path) as audio:
+            rate = audio.samplerate
+            samples = audio.read(min(audio.frames, rate * 6), dtype="float32", always_2d=True).mean(axis=1)
+        if not len(samples) or not np.isfinite(samples).all():
+            continue
+        frame = max(1, rate // 20)
+        rms = np.array([np.sqrt(np.mean(part.astype(np.float64)**2))
+                        for part in np.array_split(samples, max(1, len(samples)//frame))])
+        active = rms > max(0.003, float(rms.max()) * 0.03)
+        if not active.any():
+            continue
+        # Favor usable duration and speech coverage, penalize clipping and level variation.
+        active_rms = rms[active]
+        score = (min(len(samples)/rate, 4) + float(active.mean())
+                 - float(np.std(20*np.log10(active_rms))) / 10
+                 - 20*float(np.mean(np.abs(samples) >= 0.99)))
+        speaker = _speaker(item)
+        if speaker not in best or score > best[speaker][0]:
+            best[speaker] = (score, path, samples, rate)
+    missing = speakers - best.keys()
+    if missing:
+        raise ValueError("No usable vocal reference for a speaker; check separated audio")
+    folder = session / "tmp" / "tts_references"
+    folder.mkdir(parents=True, exist_ok=True)
+    references = {}
+    for index, (speaker, (_, source, samples, rate)) in enumerate(sorted(best.items()), 1):
+        path = folder / f"{index:04d}.wav"
+        sf.write(path, match_loudness(samples, rate), rate)
+        references[speaker] = path
+        print(f"[tts] Fixed reference {index}: {source.name}, {len(samples)/rate:.1f}s", flush=True)
+    return references
+
+
 def _tts_text(item: dict) -> str:
     text = target_text(item)
     if not isinstance(text, str) or not text.strip():
@@ -234,22 +298,35 @@ def generate_tts(
     if has_original_audio and original_vocals_file is None:
         raise ValueError("original_vocals_file is required for original audio items")
 
-    if all(is_original_audio(item) for item in items):
+    if all(is_original_audio(item) or (output_dir / f"{index:04d}.wav").is_file()
+           for index, item in enumerate(items, 1)):
         for index, item in enumerate(items, start=1):
             output_file = output_dir / f"{index:04d}.wav"
-            assert original_vocals_file is not None
-            _write_original_target_audio(output_file, item, original_vocals_file)
+            if is_original_audio(item):
+                assert original_vocals_file is not None
+                _write_original_target_audio(output_file, item, original_vocals_file)
             if progress_callback:
                 progress = round(index / total * 100)
                 progress_callback(progress, f"Prepared {index}/{total} TTS clips")
         return output_dir
 
+    reference_mode = os.getenv("VOXCPM_REFERENCE_MODE", "fixed").strip().lower()
+    if reference_mode not in {"fixed", "segment"}:
+        raise ValueError("VOXCPM_REFERENCE_MODE must be fixed or segment")
+    inference_timesteps = int(os.getenv("VOXCPM_INFERENCE_TIMESTEPS", "8"))
+    if inference_timesteps < 1:
+        raise ValueError("VOXCPM_INFERENCE_TIMESTEPS must be positive")
+    normalize_audio = os.getenv("VOXCPM_MATCH_LOUDNESS", "true").lower() == "true"
     model = _load_model()
     print(f"[tts] Model ready; preparing {total} clips", flush=True)
     min_reference_ms = int(os.getenv("VOXCPM_MIN_REFERENCE_MS", "1200"))
-    fallback_references, global_fallback = _fallback_references(vocals_dir, items, min_reference_ms)
+    if reference_mode == "fixed":
+        fallback_references = _fixed_references(vocals_dir, items, session)
+        global_fallback = None
+    else:
+        fallback_references, global_fallback = _fallback_references(vocals_dir, items, min_reference_ms)
     cfg_value = float(os.getenv("VOXCPM_CFG_VALUE", "2.0"))
-    inference_timesteps = int(os.getenv("VOXCPM_INFERENCE_TIMESTEPS", "10"))
+    print(f"[tts] Reference mode={reference_mode}; steps={inference_timesteps}; loudness matching={normalize_audio}", flush=True)
 
     fallback_caches = {}
 
@@ -265,7 +342,7 @@ def generate_tts(
         if not output_file.exists():
             reference = vocals_dir / f"{index:04d}.wav"
             text = _tts_text(item)
-            if not reference.exists() or len(AudioSegment.from_file(reference)) < min_reference_ms:
+            if reference_mode == "fixed" or not reference.exists() or len(AudioSegment.from_file(reference)) < min_reference_ms:
                 speaker = _speaker(item)
                 if speaker not in fallback_caches:
                     fallback = fallback_references.get(speaker, global_fallback)
@@ -288,6 +365,8 @@ def generate_tts(
                     cfg_value=cfg_value,
                     inference_timesteps=inference_timesteps,
                 )
+            if normalize_audio:
+                wav = match_loudness(wav, model.tts_model.sample_rate)
             sf.write(output_file, wav, model.tts_model.sample_rate)
         if progress_callback:
             progress = round(index / total * 100)

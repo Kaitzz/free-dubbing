@@ -13,6 +13,13 @@ from backend.app import runtime_security
 from backend.app.adapters import voxcpm as voxcpm_mod
 
 
+@pytest.fixture(autouse=True)
+def legacy_reference_mode(monkeypatch):
+    # Existing regression cases exercise the retained per-segment compatibility mode.
+    monkeypatch.setenv("VOXCPM_REFERENCE_MODE", "segment")
+    monkeypatch.setenv("VOXCPM_INFERENCE_TIMESTEPS", "10")
+
+
 def test_release_model_clears_cached_model(monkeypatch):
     model = object()
     monkeypatch.setattr(voxcpm_mod, "_MODEL", model)
