@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -540,16 +541,34 @@ def _is_inside_workfolder(path: Path) -> bool:
     return True
 
 
+def _remove_tree(path: Path) -> None:
+    # Windows refuses to delete files another program (a player, a scanner) still holds open.
+    for attempt in range(5):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if attempt == 4:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Could not delete {path.name}: {exc.strerror or exc}. "
+                    "Close programs using these files and try again.",
+                ) from exc
+            time.sleep(0.4)
+
+
 def _purge_task(task: dict) -> None:
     session_path = task.get("session_path")
     if session_path:
         session_dir = Path(session_path)
         if session_dir.exists() and _is_inside_workfolder(session_dir):
-            shutil.rmtree(session_dir)
+            _remove_tree(session_dir)
     # Colab tasks keep their session (and older per-stage copies) under _remote/<task id>.
     remote_dir = WORKFOLDER / "_remote" / task["id"]
     if remote_dir.is_dir() and remote_dir.resolve().parent == (WORKFOLDER / "_remote").resolve():
-        shutil.rmtree(remote_dir)
+        _remove_tree(remote_dir)
     remote.forget(task["id"])
     log_file = database.log_path(task["id"])
     if log_file.exists():
@@ -559,14 +578,19 @@ def _purge_task(task: dict) -> None:
 
 @app.delete("/api/tasks/{task_id}", status_code=204)
 def delete_task(task_id: str) -> Response:
-    task = database.get_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found.")
-    if task["status"] == "running":
-        raise HTTPException(status_code=409, detail="Cannot delete a running task.")
-    _purge_task(task)
-    if is_local_upload_url(task["url"]):
-        remove_upload(WORKFOLDER, task["id"])
+    # Held throughout, so a Colab claim cannot pick the task up halfway through deletion.
+    with remote.lock:
+        task = database.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found.")
+        if task["status"] == "running":
+            if not remote.enabled():
+                # The in-process worker thread cannot be interrupted mid-stage.
+                raise HTTPException(status_code=409, detail="Cannot delete a running task.")
+            remote.revoke(task_id)
+        _purge_task(task)
+        if is_local_upload_url(task["url"]):
+            remove_upload(WORKFOLDER, task["id"])
     return Response(status_code=204)
 
 

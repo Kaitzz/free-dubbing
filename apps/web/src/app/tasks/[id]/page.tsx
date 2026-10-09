@@ -552,7 +552,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
               <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
                 <DialogTrigger
                   render={
-                    <Button variant="destructive" disabled={!task || isRunning}>
+                    <Button variant="destructive" disabled={!task}>
                       <Trash2 className="size-4" />
                       {t.task.deleteTask}
                     </Button>
@@ -563,6 +563,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
                     <DialogTitle>{t.task.deleteTitle}</DialogTitle>
                     <DialogDescription>
                       {t.task.deleteDescription}
+                      {isRunning ? ` ${t.task.deleteRunningNote}` : null}
                     </DialogDescription>
                   </DialogHeader>
                   {deleteError ? (

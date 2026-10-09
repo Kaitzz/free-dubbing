@@ -144,18 +144,33 @@ export type YtdlpSettings = {
 
 export type LocalDirection = "en-zh" | "ja-zh" | "zh-en"
 
-async function request<T>(
-  path: string,
-  options?: RequestInit,
-  responseOptions?: ResponseOptions,
-): Promise<T> {
-  const response = await fetch(path, {
+const CSRF_FAILURE = "CSRF validation failed."
+
+// The local backend issues a new CSRF token each time it starts, so a page left
+// open across a restart refreshes its token once and repeats the request.
+async function send(path: string, options?: RequestInit) {
+  const attempt = () => fetch(path, {
     ...options,
     headers: requestHeaders(options),
     credentials: "include",
     cache: "no-store",
   })
-  return parseResponse<T>(response, responseOptions)
+  const response = await attempt()
+  if (response.status !== 403 || !UNSAFE_METHODS.has((options?.method || "GET").toUpperCase())) {
+    return response
+  }
+  const body = await response.clone().json().catch(() => null) as { detail?: unknown } | null
+  if (body?.detail !== CSRF_FAILURE) return response
+  await getAuthSession()
+  return attempt()
+}
+
+async function request<T>(
+  path: string,
+  options?: RequestInit,
+  responseOptions?: ResponseOptions,
+): Promise<T> {
+  return parseResponse<T>(await send(path, options), responseOptions)
 }
 
 export async function getAuthSession() {
@@ -298,17 +313,7 @@ export async function uploadLocalTask(
   form.append("execution_mode", executionMode)
   form.append("output_mode", outputMode)
 
-  const options: RequestInit = {
-    method: "POST",
-    body: form,
-  }
-  const response = await fetch("/api/tasks/upload", {
-    ...options,
-    headers: requestHeaders(options),
-    credentials: "include",
-    cache: "no-store",
-  })
-  return parseResponse<Task>(response)
+  return parseResponse<Task>(await send("/api/tasks/upload", { method: "POST", body: form }))
 }
 
 export function getCookieInfo() {

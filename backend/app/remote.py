@@ -54,6 +54,20 @@ def forget(task_id):
     with database.connect() as c:
         c.execute('DELETE FROM remote_stage_versions WHERE task_id=?', (task_id,))
 
+def revoke(task_id):
+    """Cancel the task's lease; the worker gets 409 on its next heartbeat and stops the stage."""
+    with lock:
+        _ensure_schema()
+        with database.connect() as c:
+            row = c.execute("SELECT * FROM remote_leases WHERE task_id=? AND state IN ('active','committing')",
+                            (task_id,)).fetchone()
+            if row is None:
+                return
+            if row['state'] == 'committing':
+                raise HTTPException(409, 'A stage result is being saved; try again in a moment.')
+            c.execute("UPDATE remote_leases SET state='cancelled' WHERE token=?", (row['token'],))
+    _discard_lease_files(task_id, row['token'])
+
 def init():
     _ensure_schema()
     with database.connect() as c:

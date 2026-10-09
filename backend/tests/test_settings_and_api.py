@@ -694,6 +694,50 @@ def test_delete_task_removes_session_log_and_record(monkeypatch, tmp_path):
     assert not log_file.exists()
 
 
+def test_delete_task_retries_files_briefly_held_open(monkeypatch, tmp_path):
+    configure_tmp_runtime(monkeypatch, tmp_path)
+    task_id = database.create_task("https://www.youtube.com/watch?v=lockedvidxx", task_id="lockedvidxx")
+    session = config.WORKFOLDER / "uploader" / "title__lockedvidxx"
+    (session / "media").mkdir(parents=True)
+    (session / "media" / "video_final.mp4").write_bytes(b"mp4")
+    database.update_task(task_id, session_path=str(session))
+    real_rmtree = main.shutil.rmtree
+    attempts = []
+
+    def rmtree(path, *args, **kwargs):
+        attempts.append(path)
+        if len(attempts) == 1:
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(main.shutil, "rmtree", rmtree)
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)
+    response = authenticated_client().delete(f"/api/tasks/{task_id}")
+
+    assert response.status_code == 204
+    assert len(attempts) == 2 and not session.exists()
+    assert database.get_task(task_id) is None
+
+
+def test_delete_task_reports_files_that_stay_locked(monkeypatch, tmp_path):
+    configure_tmp_runtime(monkeypatch, tmp_path)
+    task_id = database.create_task("https://www.youtube.com/watch?v=stucklockxx", task_id="stucklockxx")
+    session = config.WORKFOLDER / "uploader" / "title__stucklockxx"
+    session.mkdir(parents=True)
+    database.update_task(task_id, session_path=str(session))
+
+    def rmtree(path, *args, **kwargs):
+        raise PermissionError(32, "in use")
+
+    monkeypatch.setattr(main.shutil, "rmtree", rmtree)
+    monkeypatch.setattr(main.time, "sleep", lambda seconds: None)
+    response = authenticated_client().delete(f"/api/tasks/{task_id}")
+
+    assert response.status_code == 409
+    assert "Close programs using these files" in response.json()["detail"]
+    assert database.get_task(task_id) is not None
+
+
 def test_delete_task_returns_404_for_unknown(monkeypatch, tmp_path):
     configure_tmp_runtime(monkeypatch, tmp_path)
     client = authenticated_client()

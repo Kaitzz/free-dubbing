@@ -180,3 +180,26 @@ it("shows downloaded cover and source captions in task details", async () => {
   expect(screen.getByRole("link", { name: "下载原文 CC 字幕（SRT）" }))
     .toHaveAttribute("href", "/api/tasks/task-race/source-asset/source-subtitles?download=1")
 })
+
+
+it("deletes a running task after confirmation and returns to the task list", async () => {
+  mocks.fetch.mockImplementation(async (input, init) => {
+    const path = String(input)
+    if ((init?.method || "GET") === "DELETE" && path === "/api/tasks/task-race") return new Response(null, { status: 204 })
+    return path.endsWith("/log") ? new Response("") : jsonResponse(taskWithStatus("running"))
+  })
+  vi.stubGlobal("fetch", mocks.fetch)
+  const user = userEvent.setup()
+  const params = Promise.resolve({ id: "task-race" })
+  await act(async () => {
+    render(<LanguageProvider><Suspense fallback={<div>loading</div>}><TaskDetailPage params={params} /></Suspense></LanguageProvider>)
+    await params
+  })
+  const deleteButton = await screen.findByRole("button", { name: "删除任务" })
+  await waitFor(() => expect(deleteButton).toBeEnabled())
+  await user.click(deleteButton)
+  expect(await screen.findByText(/正在 Colab 上运行的阶段会先被停止/)).toBeInTheDocument()
+  await user.click(screen.getByRole("button", { name: "确认删除" }))
+  await waitFor(() => expect(mocks.replace).toHaveBeenCalledWith("/"))
+  expect(mocks.fetch.mock.calls.some(([input, init]) => String(input) === "/api/tasks/task-race" && init?.method === "DELETE")).toBe(true)
+})

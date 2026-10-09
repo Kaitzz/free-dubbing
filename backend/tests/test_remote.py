@@ -254,6 +254,29 @@ def test_full_final_video_return_and_gui_download(setup):
     response=browser.get(f'/api/tasks/{task_id}/artifact/final-video')
     assert response.status_code==200 and response.content==b'final-video'
 
+def test_deleting_a_running_task_cancels_its_colab_lease(setup):
+    browser,worker,_=setup
+    task_id=database.create_task('https://www.youtube.com/watch?v=abcdefghijk')
+    job=claim(worker);prefix=f"/api/colab-worker/{job['lease']}"
+    worker.put(prefix+'/output',params={'offset':0},content=b'partial')
+    assert database.get_task(task_id)['status']=='running'
+    assert browser.delete(f'/api/tasks/{task_id}').status_code==204
+    assert database.get_task(task_id) is None
+    # The worker learns at its next heartbeat and cannot commit afterwards.
+    assert worker.post(prefix+'/heartbeat',json={}).status_code==409
+    assert worker.post(prefix+'/finish',json=finish_payload(job,'paused',succeeded={'download'})).status_code==409
+    assert not (config.DATA_DIR/'remote'/job['lease']).exists()
+    assert claim(worker) is None
+
+def test_running_task_is_not_deleted_while_its_result_is_being_saved(setup):
+    browser,worker,_=setup
+    task_id=database.create_task('https://www.youtube.com/watch?v=abcdefghijk')
+    claim(worker)
+    with database.connect() as c:c.execute("UPDATE remote_leases SET state='committing'")
+    response=browser.delete(f'/api/tasks/{task_id}')
+    assert response.status_code==409 and 'being saved' in response.json()['detail']
+    assert database.get_task(task_id) is not None
+
 def test_deleting_task_removes_its_remote_checkpoints(setup):
     browser,worker,root=setup
     task_id=database.create_task('https://www.youtube.com/watch?v=abcdefghijk',execution_mode='manual')
