@@ -568,7 +568,14 @@ class PipelineRunner:
         self.stage_message("split_audio", "Created vocal reference segments")
 
     def _tts(self, _: dict) -> None:
-        from .adapters.voxcpm import generate_tts
+        import os
+        provider = os.getenv("DUBBING_TTS_PROVIDER", "minimax")
+        if provider == "minimax":
+            from .adapters.minimax_tts import generate_tts
+        elif provider == "voxcpm":
+            from .adapters.voxcpm import generate_tts
+        else:
+            raise ValueError("DUBBING_TTS_PROVIDER must be minimax or voxcpm")
 
         session = _require(self.artifacts.session, "session")
         translation_file = _require(self.artifacts.translation_file, "translation_file")

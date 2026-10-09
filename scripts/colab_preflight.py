@@ -18,7 +18,10 @@ assert int(node_version.lstrip('v').split('.')[0]) >= 22, 'YouTube requires Node
 print('YouTube runtime:', node_version, 'yt-dlp:', importlib.metadata.version('yt-dlp'), 'EJS:', importlib.metadata.version('yt-dlp-ejs'))
 assert torch.cuda.is_available(), 'Select a Colab GPU runtime'
 print('GPU:', torch.cuda.get_device_name(0), 'torch:', torch.__version__)
-for name in ['funasr', 'voxcpm', 'demucs.api', 'openai', 'audiostretchy']:
+modules = ['funasr', 'demucs.api', 'openai', 'audiostretchy', 'requests']
+if os.getenv('DUBBING_TTS_PROVIDER','minimax') == 'voxcpm':
+    modules.append('voxcpm')
+for name in modules:
     importlib.import_module(name)
     print('Import OK:', name)
 subprocess.run(['ffprobe', '-version'], check=True, stdout=subprocess.DEVNULL)

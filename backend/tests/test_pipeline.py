@@ -206,6 +206,7 @@ def test_manual_subtitles_continue_skips_inapplicable_stages_and_finishes(monkey
 
 
 def test_tts_stage_passes_original_vocals_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("DUBBING_TTS_PROVIDER", "voxcpm")
     from backend.app.adapters import voxcpm
 
     configure_db(monkeypatch, tmp_path)

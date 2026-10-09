@@ -191,6 +191,9 @@ def device_plan() -> tuple[DeviceResolution, ...]:
 def device_plan_summary() -> str:
     parts = []
     for item in device_plan():
+        if item.component == "voxcpm" and os.getenv("DUBBING_TTS_PROVIDER", "minimax") == "minimax":
+            parts.append("tts=minimax-api")
+            continue
         text = f"{item.component}={item.selected}"
         if item.reason:
             text += f" ({item.reason})"
