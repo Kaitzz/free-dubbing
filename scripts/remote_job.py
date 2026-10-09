@@ -15,7 +15,7 @@ database.create_task(task['url'],task_id=task['id'],execution_mode='manual',outp
 for stage in task['stages']:
     database.update_stage(task['id'],stage['name'],**{k:stage.get(k) for k in
         ('status','progress','started_at','completed_at','last_message','error_message')})
-session=job_dir/'workfolder/session'
+session=config.WORKFOLDER/'session'
 uploads=config.WORKFOLDER/'_uploads'/task['id']
 if session.exists():
     rebase_local_info(session,uploads)

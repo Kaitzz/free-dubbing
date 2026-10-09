@@ -51,8 +51,9 @@ def test_optional_assets_failure_falls_back_and_cover_is_saved(tmp_path, monkeyp
     assert payload['subtitle_source']['kind']=='automatic'
     assert "00:00:00,100 --> 00:00:01,000" in (tmp_path/"metadata/source_subtitles.srt").read_text()
     # Transport does not lose the new artifacts.
-    from backend.app.remote_archive import pack,unpack
-    pack(tmp_path/"out.zip",{"session":tmp_path/"metadata"})
+    from backend.app.remote_archive import listing,pack_files,unpack
+    files=listing({"session":tmp_path/"metadata"})
+    pack_files(tmp_path/"out.zip",[(name,path) for name,(path,_,_) in files.items()])
     unpack(tmp_path/"out.zip",tmp_path/"received")
     assert (tmp_path/"received/session/source_subtitles.srt").is_file()
 

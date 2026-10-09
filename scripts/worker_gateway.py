@@ -8,7 +8,7 @@ app=FastAPI(docs_url=None,redoc_url=None,openapi_url=None)
 
 @app.api_route('/api/colab-worker/{path:path}',methods=['GET','POST','PUT'])
 async def forward(path: str, request: Request):
-    if not re.fullmatch(r'claim|[a-f0-9]{32}/(input|heartbeat|output|finish)', path):
+    if not re.fullmatch(r'hello|claim|[a-f0-9]{32}/(files|heartbeat|output|finish)', path):
         raise HTTPException(404, 'Not found')
     if not request.headers.get('authorization','').startswith('Bearer '):
         raise HTTPException(401,'Worker token required')

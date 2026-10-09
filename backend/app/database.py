@@ -283,13 +283,13 @@ def backfill_titles_from_metadata() -> None:
             conn.execute("UPDATE tasks SET title = ? WHERE id = ?", (title, row["id"]))
 
 
-def fail_stale_active_tasks() -> None:
+def fail_stale_active_tasks(statuses: tuple[str, ...] = ACTIVE_STATUSES) -> None:
     message = "Backend restarted before the task completed."
     completed_at = now_iso()
     with connect() as conn:
         active_tasks = conn.execute(
-            f"SELECT id, current_stage FROM tasks WHERE status IN ({','.join('?' for _ in ACTIVE_STATUSES)})",
-            ACTIVE_STATUSES,
+            f"SELECT id, current_stage FROM tasks WHERE status IN ({','.join('?' for _ in statuses)})",
+            statuses,
         ).fetchall()
         for task in active_tasks:
             conn.execute(

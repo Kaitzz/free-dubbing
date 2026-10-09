@@ -130,7 +130,8 @@ async def lifespan(app: FastAPI):
     remote.init()
     database.delete_expired_auth_sessions(database.now_iso())
     database.backfill_titles_from_metadata()
-    database.fail_stale_active_tasks()
+    # Queued Colab tasks have not started; they wait for a worker across restarts.
+    database.fail_stale_active_tasks(("running",) if remote.enabled() else database.ACTIVE_STATUSES)
     worker.start(run_task)
     yield
 
@@ -545,6 +546,10 @@ def _purge_task(task: dict) -> None:
         session_dir = Path(session_path)
         if session_dir.exists() and _is_inside_workfolder(session_dir):
             shutil.rmtree(session_dir)
+    # Colab tasks keep their session (and older per-stage copies) under _remote/<task id>.
+    remote_dir = WORKFOLDER / "_remote" / task["id"]
+    if remote_dir.is_dir() and remote_dir.resolve().parent == (WORKFOLDER / "_remote").resolve():
+        shutil.rmtree(remote_dir)
     log_file = database.log_path(task["id"])
     if log_file.exists():
         log_file.unlink()

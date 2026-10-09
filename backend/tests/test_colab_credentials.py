@@ -2,7 +2,7 @@ from pathlib import Path
 from zipfile import ZipFile
 import pytest
 from scripts.colab_credentials import write_youtube_cookie
-from backend.app.remote_archive import pack
+from backend.app.remote_archive import listing, pack_files
 
 
 def test_cookie_readable_by_downloader_but_not_in_checkpoint(tmp_path):
@@ -16,7 +16,7 @@ def test_cookie_readable_by_downloader_but_not_in_checkpoint(tmp_path):
     session.mkdir()
     (session/'result.txt').write_text('result')
     archive=tmp_path/'result.zip'
-    pack(archive, {'session':session})
+    pack_files(archive, [(name, path) for name, (path, _, _) in listing({'session':session}).items()])
     with ZipFile(archive) as z:
         assert not any('cookie' in n for n in z.namelist())
         assert all(b'synthetic-secret' not in z.read(n) for n in z.namelist())
@@ -41,16 +41,15 @@ def test_worker_supplies_cookie_without_env_leak_and_cleans_file(tmp_path,monkey
     monkeypatch.setattr(worker,'ROOT',tmp_path)
     monkeypatch.setenv('OPENAI_API_KEY','synthetic-api-key')
     monkeypatch.setenv('YOUTUBE_COOKIES','# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSID\tsynthetic-secret\n')
-    input_bytes=io.BytesIO()
-    with ZipFile(input_bytes,'w'): pass
     uploads=[]
     def handler(request):
-        if request.url.path.endswith('/input'): return httpx.Response(200,content=input_bytes.getvalue())
         if request.url.path.endswith('/output'):
             uploads.append(request.content)
             return httpx.Response(200,json={'offset':len(request.content)})
-        return httpx.Response(200,json={'status':'failed'})
-    cookie_path=tmp_path/'remote-runs'/('a'*32)/'data/cookies/youtube.txt'
+        if request.url.path.endswith('/finish'):
+            return httpx.Response(200,json={'status':'failed','files':{}})
+        return httpx.Response(200,json={'ok':True})
+    cookie_path=tmp_path/'remote-runs/tasks/test/leases'/('a'*32)/'data/cookies/youtube.txt'
     class Process:
         stdout=io.StringIO('')
         def poll(self): return 0
@@ -59,13 +58,17 @@ def test_worker_supplies_cookie_without_env_leak_and_cleans_file(tmp_path,monkey
         assert 'YOUTUBE_COOKIES' not in env
         assert Path(env['YOUDUB_DATA_DIR'])/'cookies/youtube.txt' == cookie_path
         assert 'synthetic-secret' in cookie_path.read_text()
+        output=Path(env['WORKFOLDER'])/'session/metadata/asr.json'
+        output.parent.mkdir(parents=True); output.write_text('{}')
         return Process()
     monkeypatch.setattr(worker.subprocess,'Popen',start)
-    monkeypatch.setattr(worker,'snapshot',lambda folder,original,exitcode=None: {**original,'status':'failed','session_path':str(folder/'workfolder/session')})
-    job={'lease':'a'*32,'task':{'id':'test','url':'https://www.youtube.com/watch?v=abcdefghijk','stages':[]},
+    monkeypatch.setattr(worker,'snapshot',lambda folder,original,exitcode=None: {**original,'status':'failed'})
+    job={'lease':'a'*32,'transfer_version':worker.TRANSFER_VERSION,'files':{},
+         'task':{'id':'test','url':'https://www.youtube.com/watch?v=abcdefghijk','stages':[]},
          'settings':{'base_url':'https://example.com/v1','model':'test','translate_concurrency':'2'}}
     with httpx.Client(base_url='https://test.invalid',transport=httpx.MockTransport(handler)) as client:
         worker.run_job(client,job)
     assert not cookie_path.exists()
     with ZipFile(io.BytesIO(b''.join(uploads))) as z:
+        assert z.namelist()==['session/metadata/asr.json']
         assert all(b'synthetic-secret' not in z.read(n) for n in z.namelist())
