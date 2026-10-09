@@ -336,6 +336,9 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
                 <Download className="size-4" />
                 {t.task.download}
               </Button>
+              <Button variant="outline" nativeButton={false} render={<a href={`/api/tasks/${task.id}/artifact/video-metadata`} />}>
+                {t.task.metadataDownload}
+              </Button>
             </CardContent>
           </Card>
         ) : null}

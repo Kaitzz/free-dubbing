@@ -686,9 +686,23 @@ def final_video(task_id: str, download: bool = False) -> FileResponse:
         raise HTTPException(status_code=404, detail="Final video is not available.")
     name = Path(final_path).name
     if download:
-        return FileResponse(final_path, media_type="video/mp4", filename=name)
+        from .video_export import prepare_export
+        path, info, _ = prepare_export(task)
+        return FileResponse(path, media_type="video/mp4", filename=info["filename"])
     headers = {"Content-Disposition": f'inline; filename="{name}"'}
     return FileResponse(final_path, media_type="video/mp4", headers=headers)
+
+
+@app.get("/api/tasks/{task_id}/artifact/video-metadata")
+def video_metadata(task_id: str) -> FileResponse:
+    task = database.get_task(task_id)
+    if not task or not task.get("final_video_path") or not Path(task["final_video_path"]).is_file():
+        raise HTTPException(status_code=404, detail="Final video is not available.")
+    from .video_export import prepare_export
+    _, info, manifest = prepare_export(task)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="Metadata is unavailable for this legacy task.")
+    return FileResponse(manifest, media_type="application/json", filename=Path(info["filename"]).with_suffix(".metadata.json").name)
 
 
 @app.get("/api/cookies/youtube")

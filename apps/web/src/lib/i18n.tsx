@@ -102,6 +102,7 @@ const messages: Record<UiLanguage, Messages> = {
       cover: "Video cover",
       sourceCaptions: "Download source CC (SRT)",
       download: "Download",
+      metadataDownload: "Download metadata",
       stages: "Stages",
       resumeHelp: "Resume from the failed stage. Already-succeeded stages will be reused from cache.",
       continueHelp: "Run the next stage. Completed stages stay cached.",
@@ -211,6 +212,7 @@ const messages: Record<UiLanguage, Messages> = {
     },
     stages: {
       download: "Download",
+      metadataDownload: "Download metadata",
       separate: "Demucs",
       asr: "SenseVoice",
       asr_fix: "Split sentences",
@@ -295,6 +297,7 @@ const messages: Record<UiLanguage, Messages> = {
       cover: "视频封面",
       sourceCaptions: "下载原文 CC 字幕（SRT）",
       download: "下载",
+      metadataDownload: "下载元数据",
       stages: "处理阶段",
       resumeHelp: "从失败阶段继续执行。已经成功的阶段会复用缓存结果。",
       continueHelp: "执行下一个阶段。已完成的阶段会保留缓存。",
@@ -402,6 +405,7 @@ const messages: Record<UiLanguage, Messages> = {
     },
     stages: {
       download: "下载视频",
+      metadataDownload: "下载元数据",
       separate: "分离人声与背景音",
       asr: "语音识别",
       asr_fix: "切分句子",
