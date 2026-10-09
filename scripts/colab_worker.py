@@ -17,6 +17,9 @@ from urllib.parse import urlparse
 import httpx
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from backend.app.remote_archive import unpack, pack
+from backend.app.remote_delta import manifest, pack_delta, restore
+
+TASK_CACHE = {}
 from backend.app.youtube import is_youtube_url
 from scripts.colab_credentials import write_youtube_cookie
 
@@ -129,11 +132,16 @@ def run_job(client, job):
     process=None
     cookie_file=None
     try:
-        with client.stream('GET',prefix+'/input') as response:
+        cached = TASK_CACHE.get(original['id'], {})
+        incremental = job.get('transfer_version') == 1
+        cache_manifest = manifest(cached) if incremental else {}
+        with client.stream('POST' if incremental else 'GET', prefix+'/input',
+                           **({'json':cache_manifest} if incremental else {})) as response:
             response.raise_for_status()
             with (folder/'input.zip').open('wb') as f:
                 for chunk in response.iter_bytes():f.write(chunk)
-        unpack(folder/'input.zip',folder/'received')
+        restore(folder/'input.zip', folder/'received', cached)
+        input_manifest = manifest({'session':folder/'received/session'}) if incremental else {}
         work=folder/'workfolder';work.mkdir()
         received=folder/'received'
         if (received/'session').exists():shutil.move(str(received/'session'),str(work/'session'))
@@ -180,7 +188,6 @@ def run_job(client, job):
             if lost.wait(1):
                 process.terminate();break
         code=process.wait();reader.join(timeout=7)
-        stopped.set();thread.join(timeout=25)
         # Flush the final phase messages before the lease is finished.
         try:
             while pending.lines:
@@ -199,13 +206,18 @@ def run_job(client, job):
         if (session/'metadata').is_dir():
             print(f"[files] Subtitles/transcripts saved in: {session/'metadata'}",flush=True)
         output=folder/'output.zip'
-        pack(output,{'session':session})
+        if incremental:
+            pack_delta(output, {'session':session}, input_manifest)
+        else:
+            pack(output, {'session':session})
         with output.open('rb') as f:
             offset=0
             while block:=f.read(8*1024*1024):
                 response=client.put(prefix+'/output',params={'offset':offset},content=block)
                 response.raise_for_status();offset=response.json()['offset']
         response=client.post(prefix+'/finish',json={'task':task});response.raise_for_status()
+        TASK_CACHE[original['id']] = {'session':session, 'uploads':uploads}
+        stopped.set();thread.join(timeout=25)
         print('Checkpoint returned:',response.json()['status'],flush=True)
         print(f"[transfer] Checkpoint return: {time.monotonic()-inference_done:.1f}s, {output.stat().st_size/1048576:.1f} MiB; stage round trip: {time.monotonic()-started:.1f}s",flush=True)
     finally:

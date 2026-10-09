@@ -136,3 +136,41 @@ def test_gui_cookie_only_sent_for_youtube_download(setup,monkeypatch,download_do
     data=worker.get('/api/colab-worker/'+job['lease']+'/input').content
     with ZipFile(io.BytesIO(data)) as z:
         assert all(b'gui-cookie-value' not in z.read(n) for n in z.namelist())
+
+
+def test_incremental_round_trip_and_new_worker_recovery(setup):
+    from backend.app.remote_delta import manifest, pack_delta, restore, MANIFEST
+    _, worker, root = setup
+    task_id = database.create_task('https://www.youtube.com/watch?v=abcdefghijk')
+    session = config.WORKFOLDER/'base-session'; session.mkdir(parents=True)
+    (session/'video.mp4').write_bytes(b'large-video' * 10000)
+    (session/'removed.txt').write_text('old')
+    database.update_task(task_id, session_path=str(session))
+    job = worker.post('/api/colab-worker/claim').json()['job']
+    assert job['transfer_version'] == 1
+    prefix = f"/api/colab-worker/{job['lease']}"
+    base = manifest({'session':session})
+    response = worker.post(prefix+'/input', json=base)
+    assert response.status_code == 200
+    archive = root/'input.zip'; archive.write_bytes(response.content)
+    with ZipFile(archive) as z: assert z.namelist() == [MANIFEST]
+    restore(archive, root/'colab', {'session':session})
+    remote_session = root/'colab/session'
+    (remote_session/'removed.txt').unlink()
+    (remote_session/'translated.json').write_text('{"translation":"hello"}')
+    archive = root/'output-delta.zip'
+    pack_delta(archive, {'session':remote_session}, base)
+    worker.put(prefix+'/output', content=archive.read_bytes()).raise_for_status()
+    task = job['task']; task['status'] = 'paused'
+    task['stages'][0]['status'] = 'succeeded'
+    worker.post(prefix+'/finish', json={'task':task}).raise_for_status()
+    saved = Path(database.get_task(task_id)['session_path'])
+    assert (saved/'video.mp4').read_bytes() == (session/'video.mp4').read_bytes()
+    assert not (saved/'removed.txt').exists()
+    assert (session/'removed.txt').exists()
+    next_job = worker.post('/api/colab-worker/claim').json()['job']
+    response = worker.post(f"/api/colab-worker/{next_job['lease']}/input", json={})
+    assert response.status_code == 200
+    archive.write_bytes(response.content)
+    restore(archive, root/'fresh-worker', {})
+    assert manifest({'session':root/'fresh-worker/session'}) == manifest({'session':saved})

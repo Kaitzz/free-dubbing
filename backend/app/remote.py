@@ -14,6 +14,8 @@ from . import config, database, runtime_security
 from .stages import STAGE_NAMES
 from .remote_archive import pack, unpack, rebase_local_info, MAX_ARCHIVE_BYTES
 
+from .remote_delta import pack_delta, restore, MAX_MANIFEST, validate_manifest
+
 router = APIRouter()
 lock = threading.RLock()
 LEASE_SECONDS = 180
@@ -139,8 +141,7 @@ def claim():
             session = Path(task['session_path']) if task.get('session_path') else None
             if session and not session.resolve().is_relative_to(config.WORKFOLDER.resolve()):
                 raise ValueError('Session outside workfolder')
-            pack(folder/'input.zip', {'session':session,
-                 'uploads':config.WORKFOLDER/'_uploads'/task_id})
+            # Archives are prepared on demand, after the worker sends its cache manifest.
             with database.connect() as c:
                 c.execute('INSERT OR REPLACE INTO remote_leases VALUES (?,?,?,?,?,?)',
                           (task_id, token, time.time()+LEASE_SECONDS, stage, json.dumps(task), 'active'))
@@ -149,15 +150,40 @@ def claim():
             raise
         # Only download jobs receive the latest GUI cookie, never translation keys.
         settings=database.get_openai_settings()
-        return {'job':{'lease':token, 'task':task, 'settings':{k:v for k,v in settings.items() if k!='api_key'},
+        return {'job':{'lease':token, 'task':task, 'transfer_version':1, 'settings':{k:v for k,v in settings.items() if k!='api_key'},
                        **cookie_settings}}
 
 
 @router.get('/api/colab-worker/{token}/input')
 def download_input(token: str):
     with lock:
-        lease(token)
+        row = lease(token)
+        import json
+        task = json.loads(row['snapshot'])
+        pack(storage()/token/'input.zip', {'session':task.get('session_path'),
+             'uploads':config.WORKFOLDER/'_uploads'/row['task_id']})
         return FileResponse(storage()/token/'input.zip', media_type='application/zip')
+
+@router.post('/api/colab-worker/{token}/input')
+async def incremental_input(token: str, request: Request):
+    import json
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_MANIFEST:
+            raise HTTPException(413, 'Cache manifest too large')
+    with lock:
+        row = lease(token)
+        task = json.loads(row['snapshot'])
+        try:
+            base = validate_manifest(json.loads(body))
+            pack_delta(storage()/token/'input-delta.zip',
+                       {'session':task.get('session_path'),
+                        'uploads':config.WORKFOLDER/'_uploads'/row['task_id']}, base)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return FileResponse(storage()/token/'input-delta.zip', media_type='application/zip')
+
 
 @router.post('/api/colab-worker/{token}/heartbeat')
 async def heartbeat(token: str, request: Request):
@@ -222,7 +248,8 @@ async def finish(token: str, request: Request):
         row=lease(token)
         destination=runtime_security.ensure_private_directory(config.WORKFOLDER/'_remote'/row['task_id']/token)
         try:
-            unpack(storage()/token/'output.zip',destination)
+            base_task = json.loads(row['snapshot'])
+            restore(storage()/token/'output.zip', destination, {'session':base_task.get('session_path')})
             session=destination/'session'
             rebase_local_info(session,config.WORKFOLDER/'_uploads'/row['task_id'])
             final=session/'media/video_final.mp4'
