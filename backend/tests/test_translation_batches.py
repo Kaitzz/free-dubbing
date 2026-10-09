@@ -125,3 +125,30 @@ def test_oversized_single_segment_fails_before_api(monkeypatch):
         raise AssertionError("No request should be sent")
     with pytest.raises(ValueError, match="text budget"):
         run(monkeypatch, fake, ["x" * 12001])
+
+
+def test_sparse_retry_keeps_neighbors_and_single_item_recovers(monkeypatch):
+    calls=[]
+    def fake(client,model,system,user):
+        request=json.loads(user);calls.append(request)
+        if 'item' in request:
+            assert request['item']['id']==60
+            assert [item['id'] for item in request['context']]==[58,59,61,62]
+            assert 'translations array' in system
+            return {'dst':'向特定的人指出这件事可能会','audio_mode':'tts'}
+        items=request['items']
+        if len(items)>1:return rows([item for item in items if item['id']!=60])
+        assert [item['id'] for item in request['context']]==[58,59,61,62]
+        return {'translations':[{'id':1,'dst':'wrong ID','audio_mode':'tts'}]}
+    output=run(monkeypatch,fake,[f's{i}' for i in range(1,74)])
+    assert len(calls)==3
+    assert len(output)==73
+    assert output[59].dst=='向特定的人指出这件事可能会'
+    assert output[58].dst=='译:s59' and output[60].dst=='译:s61'
+
+
+def test_invalid_fields_have_actionable_diagnostics(monkeypatch,capsys):
+    def fake(*args):return {'translations':[{'id':1,'dst':'','audio_mode':'tts'}]}
+    with pytest.raises(RuntimeError,match='ID 1'):
+        run(monkeypatch,fake,['fragment'])
+    assert 'Unresolved IDs: 1' in capsys.readouterr().out
