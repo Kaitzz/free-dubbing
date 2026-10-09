@@ -1,6 +1,7 @@
 """Interactive Colab pull worker. No listening server or tunnel runs on Colab."""
 from __future__ import annotations
 import argparse
+from collections import deque
 import json
 import os
 from pathlib import Path
@@ -43,7 +44,17 @@ def snapshot(job_dir, original, exitcode=None):
             if stage['name']==task.get('current_stage'):stage['status']='failed'
     return task
 
+def console_line(line):
+    """Keep phase messages and warnings; detailed output stays in the local log."""
+    value = line.strip()
+    if not value or ('%' in value and '|' in value):
+        return False
+    return (value.startswith(('Task ', 'Device plan:', '['))
+            or any(word in value.lower() for word in ('warning', 'error', 'failed', 'traceback')))
+
+
 def run_job(client, job):
+    started=time.monotonic()
     token=job['lease']; original=job['task']
     prefix=f'/api/colab-worker/{token}'
     folder=ROOT/'remote-runs'/token
@@ -83,7 +94,8 @@ def run_job(client, job):
         env=os.environ.copy()
         env.update(YOUDUB_DATA_DIR=str(folder/'data'),WORKFOLDER=str(work),
             YOUDUB_EXECUTION_BACKEND='local',MODEL_CACHE_DIR=model_cache_path(),
-            DEVICE='cuda',FUNASR_DEVICE='cuda:0',DEMUCS_DEVICE='cuda',DEMUCS_CHUNK_SECONDS='60',
+            DEVICE='cuda',FUNASR_DEVICE='cuda:0',DEMUCS_DEVICE='cuda',DEMUCS_CHUNK_SECONDS=os.getenv('DEMUCS_CHUNK_SECONDS','180'),
+            DUBBING_VIDEO_ENCODER=os.getenv('DUBBING_VIDEO_ENCODER','auto'),
             VOXCPM_LOW_MEMORY_INIT='true',VOXCPM_OPTIMIZE='false',VOXCPM_LOAD_DENOISER='false',
             OPENAI_API_KEY=os.environ['OPENAI_API_KEY'],OPENAI_BASE_URL=settings['base_url'],
             OPENAI_MODEL=settings['model'],OPENAI_TRANSLATE_CONCURRENCY=settings['translate_concurrency'] or '2')
@@ -94,21 +106,35 @@ def run_job(client, job):
             cookie_file=write_youtube_cookie(cookie_value,folder/'data')
         del cookie_value
         if lost.is_set():raise RuntimeError('Lease lost during input transfer')
+        input_done=time.monotonic()
+        print(f"[transfer] Input ready: {input_done-started:.1f}s, {(folder/'input.zip').stat().st_size/1048576:.1f} MiB",flush=True)
         print(f"Task {original['id']}: running next stage",flush=True)
         process=subprocess.Popen([sys.executable,'-u',str(ROOT/'scripts/remote_job.py'),str(folder)],
             env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
         # Read output on a background thread so loss of lease can stop inference.
+        tail=deque(maxlen=60)
         def relay():
-            for line in process.stdout:
-                print(line,end='',flush=True)
-                if line.startswith(('Task ', '[')) and '|' not in line:
-                    try:client.post(prefix+'/heartbeat',json={'log':line[:4000]})
-                    except httpx.HTTPError:pass
+            last_post=0.0
+            with (folder/'worker.log').open('w',encoding='utf-8') as log:
+                for line in process.stdout:
+                    log.write(line)
+                    tail.append(line)
+                    if not console_line(line):continue
+                    print(line,end='',flush=True)
+                    now=time.monotonic()
+                    if now-last_post>=5:
+                        last_post=now
+                        try:client.post(prefix+'/heartbeat',json={'log':line[:4000]},timeout=5)
+                        except httpx.HTTPError:pass
         reader=threading.Thread(target=relay,daemon=True);reader.start()
         while process.poll() is None:
             if lost.wait(1):
                 process.terminate();break
-        code=process.wait();reader.join(timeout=5)
+        code=process.wait();reader.join(timeout=7)
+        inference_done=time.monotonic()
+        if code:
+            print(''.join(tail),flush=True)
+        print(f"[worker] Stage process: {inference_done-input_done:.1f}s; full log: {folder/'worker.log'}",flush=True)
         if lost.is_set():raise RuntimeError('Coordinator rejected lease; stopped this worker')
         task=snapshot(folder,original,code)
         session=Path(task['session_path']) if task.get('session_path') else work/'session'
@@ -122,6 +148,7 @@ def run_job(client, job):
                 response.raise_for_status();offset=response.json()['offset']
         response=client.post(prefix+'/finish',json={'task':task});response.raise_for_status()
         print('Checkpoint returned:',response.json()['status'],flush=True)
+        print(f"[transfer] Checkpoint return: {time.monotonic()-inference_done:.1f}s, {output.stat().st_size/1048576:.1f} MiB; stage round trip: {time.monotonic()-started:.1f}s",flush=True)
     finally:
         if process and process.poll() is None:
             process.terminate()

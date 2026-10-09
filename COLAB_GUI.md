@@ -47,3 +47,16 @@ Colab 计算单元需保持运行。本机需保持联网；本实现不会规�
 ## 在 GUI 更新 Chrome Cookie
 
 使用 yt-dlp FAQ 链接的 Get cookies.txt LOCALLY 扩展导出 youtube.com 的 Netscape 格式内容，粘贴到 GUI 设置的 YouTube Cookie 并保存。每次领取 YouTube 下载阶段时，Colab 获得最新 Cookie（优先于 Secret）；不会进入任务 ZIP 或回传结果，其他域条目过滤。过期后只需在 GUI 更新并恢复失败任务，无需重启 Colab。此前用户选择不传本机 Cookie，现已明确改为允许 GUI 管理并传至 Colab。视频仍完全由 Colab 下载。
+
+
+## Colab 性能和日志
+
+Worker 默认将 Demucs 外层音频分块设为 180 秒（原为 60 秒），模型内部的分段和重叠算法不变；可用 `DEMUCS_CHUNK_SECONDS` 环境变量覆盖。较长外层分块会增加一些内存占用。
+
+合成视频默认尝试 NVIDIA NVENC：先进行一次实际编码探测，失败则使用 CPU libx264 / veryfast；实际视频编码若失败也会退回 CPU。字幕仍在 CPU 上绘制。可用 `DUBBING_VIDEO_ENCODER=cpu` 恢复原来的 libx264 / fast。NVENC CQ 23 与 x264 CRF 23 并非相同的画质尺度，需用实际视频比较画质和文件体积。已混合成 AAC 的音轨直接复用，避免二次有损编码。
+
+VoxCPM 配音保持 10 步推理及原来的声音参考方式。此次没有降低配音质量参数，也没有启用编译预热。
+
+Notebook 只显示阶段消息、警告和错误，不再显示模型的逐帧进度条。完整子进程日志位于打印出的 Colab `remote-runs/<lease>/worker.log`，随 Colab 运行时销毁，不写入 GitHub。失败时会显示最后 60 行。GUI 仍通过心跳更新阶段进度。
+
+每个阶段现在分别显示输入传输、子进程运行、检查点打包回传的耗时与传输大小；GUI 中的阶段计时不含全部这些开销。当前仍采用逐阶段完整检查点传输，这些数字可帮助判断后续是否需要增量传输。

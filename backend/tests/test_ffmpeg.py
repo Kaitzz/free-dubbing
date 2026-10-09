@@ -234,7 +234,7 @@ def test_merge_video_dubbing_omits_hard_subtitles(monkeypatch, tmp_path):
     final_command = commands[-1]
     assert "-vf" not in final_command
     assert not (metadata_dir / "subtitles.zh.srt").exists()
-    assert final_command[final_command.index("-c:a") + 1] == "aac"
+    assert final_command[final_command.index("-c:a") + 1] == "copy"
     assert "-shortest" in final_command
 
 
@@ -397,3 +397,41 @@ def test_probe_video_size_uses_configured_ffprobe(monkeypatch):
 
     assert ffmpeg.probe_video_size(Path("video.mp4")) == (1920, 1080)
     assert commands[0][0] == "/opt/bin/ffprobe"
+
+
+@pytest.mark.parametrize("result", [0, 1, "timeout"])
+def test_auto_encoder_probes_hardware_and_falls_back(monkeypatch, result):
+    monkeypatch.setenv("DUBBING_VIDEO_ENCODER", "auto")
+    def run(cmd, **kwargs):
+        assert kwargs["timeout"] == 15
+        if result == "timeout":
+            raise subprocess.TimeoutExpired(cmd, 15)
+        return subprocess.CompletedProcess(cmd, result)
+    monkeypatch.setattr(ffmpeg.subprocess, "run", run)
+    args = ffmpeg.video_encoding_args()
+    assert args[1] == ("h264_nvenc" if result == 0 else "libx264")
+    if result != 0:
+        assert "veryfast" in args
+
+
+def test_nvenc_failure_retries_cpu_and_copies_mixed_audio(monkeypatch, tmp_path):
+    session = tmp_path / "session"
+    (session / "metadata").mkdir(parents=True)
+    timings = session / "metadata/timings.json"
+    timings.write_text('{"translation": []}')
+    commands = []
+    monkeypatch.setattr(ffmpeg, "video_encoding_args", lambda: ["-c:v", "h264_nvenc", "-preset", "p4"])
+    def run(cmd, **kwargs):
+        commands.append(list(cmd))
+        Path(cmd[-1]).write_bytes(b"partial" if "h264_nvenc" in cmd else b"complete")
+        if "h264_nvenc" in cmd:
+            raise subprocess.CalledProcessError(1, cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+    monkeypatch.setattr(ffmpeg.subprocess, "run", run)
+    result = ffmpeg.merge_video(tmp_path/"v.mp4", tmp_path/"d.wav", tmp_path/"b.wav",
+                                timings, session, output_mode="dubbing")
+    assert len(commands) == 3
+    assert result.read_bytes() == b"complete"
+    assert "h264_nvenc" in commands[1]
+    assert "libx264" in commands[2]
+    assert commands[2][commands[2].index("-c:a") + 1] == "copy"

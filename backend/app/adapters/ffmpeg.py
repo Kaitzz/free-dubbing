@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import uuid
@@ -246,6 +247,29 @@ def subtitle_filter(video_file: Path, subtitle_file: Path, session: Path) -> str
     return f"subtitles=filename='{sub_path}':force_style='{style}'"
 
 
+def video_encoding_args() -> list[str]:
+    # Probe a real encode: being listed by ffmpeg does not mean NVENC is usable.
+    automatic = os.getenv("DUBBING_VIDEO_ENCODER", "cpu") == "auto"
+    if automatic:
+        try:
+            probe = subprocess.run(
+                [ffmpeg_binary(), "-hide_banner", "-loglevel", "error",
+                 "-f", "lavfi", "-i", "color=c=black:s=128x128:r=1",
+                 "-frames:v", "1", "-c:v", "h264_nvenc", "-preset", "p4",
+                 "-rc", "vbr", "-cq", "23", "-b:v", "0", "-f", "null", "-"],
+                capture_output=True, timeout=15,
+            )
+            if probe.returncode == 0:
+                print("[merge_video] Encoder: NVIDIA NVENC", flush=True)
+                return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr",
+                        "-cq", "23", "-b:v", "0"]
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    preset = "veryfast" if automatic else "fast"
+    print(f"[merge_video] Encoder: CPU libx264 ({preset})", flush=True)
+    return ["-c:v", "libx264", "-preset", preset, "-crf", "23"]
+
+
 def merge_video(
     video_file: Path,
     dubbing_file: Path | None,
@@ -282,6 +306,7 @@ def merge_video(
         subprocess.run(
             [
                 ffmpeg_binary(),
+                "-hide_banner", "-loglevel", "warning", "-nostats",
                 "-y",
                 "-i",
                 str(dubbing_input),
@@ -300,7 +325,7 @@ def merge_video(
 
     temporary_video = media_dir / f".video_final.{uuid.uuid4().hex}.mp4"
     try:
-        command = [ffmpeg_binary(), "-y", "-i", str(video_input)]
+        command = [ffmpeg_binary(), "-hide_banner", "-loglevel", "warning", "-nostats", "-y", "-i", str(video_input)]
         if mixed_audio_output is not None:
             command.extend(["-i", str(mixed_audio_output)])
         if include_subtitles:
@@ -311,13 +336,22 @@ def merge_video(
             command.extend(["-map", "1:a:0"])
         else:
             command.extend(["-map", "0:a?"])
-        command.extend(["-c:v", "libx264", "-preset", "fast", "-crf", "23"])
-        command.extend(["-c:a", "aac"])
+        command.extend(video_encoding_args())
+        command.extend(["-c:a", "copy" if mixed_audio_output is not None else "aac"])
         command.extend(["-movflags", "+faststart"])
         if mixed_audio_output is not None:
             command.append("-shortest")
         command.append(str(temporary_video.resolve()))
-        subprocess.run(command, check=True, cwd=session_dir)
+        try:
+            subprocess.run(command, check=True, cwd=session_dir)
+        except subprocess.CalledProcessError:
+            if "h264_nvenc" not in command:
+                raise
+            # A driver may pass the small probe but fail on the actual resolution.
+            print("[merge_video] NVENC failed; retrying with CPU libx264", flush=True)
+            start, end = command.index("-c:v"), command.index("-c:a")
+            command[start:end] = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
+            subprocess.run(command, check=True, cwd=session_dir)
         temporary_video.replace(final_video)
         return final_video
     except Exception:

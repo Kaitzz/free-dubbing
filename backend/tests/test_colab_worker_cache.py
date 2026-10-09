@@ -26,3 +26,11 @@ def test_default_cache_path(tmp_path, monkeypatch):
     monkeypatch.delenv('MODEL_CACHE_DIR', raising=False)
     monkeypatch.setattr(colab_worker, 'ROOT', tmp_path)
     assert colab_worker.model_cache_path() == str((tmp_path/'model-cache').resolve())
+
+
+def test_console_keeps_errors_and_stages_without_progress_spam():
+    assert colab_worker.console_line("[tts] Started")
+    assert colab_worker.console_line("RuntimeError: GPU allocation failed")
+    assert colab_worker.console_line("WARNING: missing format")
+    assert not colab_worker.console_line(" 50%|##### | 100/200 [00:12<00:12]")
+    assert not colab_worker.console_line("ordinary model debug detail")
