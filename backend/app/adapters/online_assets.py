@@ -42,22 +42,32 @@ def parse_captions(content, ext, automatic=False):
     if ext == "json3":
         for event in json.loads(content).get("events", []):
             text = _text("".join(segment.get("utf8", "") for segment in event.get("segs", [])))
-            start = round(float(event.get("tStartMs", 0)))
-            end = start + round(float(event.get("dDurationMs", 0)))
-            if text and end > start >= 0:
-                rows.append([start, end, text])
+            if not text:
+                continue  # Window styling and newline-only append events.
+            if "tStartMs" not in event or "dDurationMs" not in event:
+                raise ValueError("Text event lacks reliable timing; try another format")
+            start = round(float(event["tStartMs"]))
+            end = start + round(float(event["dDurationMs"]))
+            if not end > start >= 0:
+                raise ValueError("Invalid caption timing")
+            rows.append([start, end, text])
     else:
         pattern = r"((?:\d+:)?\d{2}:\d{2}[.,]\d{3})\s*-->\s*((?:\d+:)?\d{2}:\d{2}[.,]\d{3})[^\n]*\n(.*?)(?=\n\s*\n|\Z)"
-        for match in re.finditer(pattern, content.replace("\r", ""), re.S):
+        matches = list(re.finditer(pattern, content.replace("\r", ""), re.S))
+        if len(matches) != content.count("-->"):
+            raise ValueError("Some subtitle timing blocks could not be parsed")
+        for match in matches:
             start, end = _clock(match[1]), _clock(match[2])
             text = _text(match[3])
-            if text and end > start >= 0:
+            if text:
+                if not end > start >= 0:
+                    raise ValueError("Invalid caption timing")
                 rows.append([start, end, text])
     cleaned = []
     previous_raw = None
     for start, end, text in sorted(rows, key=lambda r: (r[0], r[1])):
         raw = (start, end, text)
-        if automatic and previous_raw and start < previous_raw[1]:
+        if automatic and ext != "json3" and previous_raw and start < previous_raw[1]:
             old, new = previous_raw[2].split(), text.split()
             for size in range(min(len(old), len(new)), 0, -1):
                 if old[-size:] == new[:size]:
@@ -110,12 +120,12 @@ def download_assets(ydl, info, session: Path, language):
                 continue
     if (metadata / "source_subtitles.json").exists():
         return
-    # Each track offers several encodings; try at most one per language/type.
+    # Try alternate encodings when a track cannot be parsed without losing text.
     attempted = set()
     for kind, lang, track in caption_candidates(info, language):
-        if (kind, lang) in attempted:
+        if (kind, lang, track["ext"]) in attempted:
             continue
-        attempted.add((kind, lang))
+        attempted.add((kind, lang, track["ext"]))
         try:
             data = _fetch(ydl, track["url"], 8 * 1024 * 1024)
             rows = parse_captions(data.decode("utf-8-sig"), track["ext"], kind == "automatic")

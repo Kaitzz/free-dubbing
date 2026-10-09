@@ -21,7 +21,9 @@ def test_rolling_captions_dedupe_using_original_context_and_preserve_later_repet
     events=[{"tStartMs":start,"dDurationMs":duration,"segs":[{"utf8":text}]} for start,duration,text in
             [(0,2000,"hello"),(500,2000,"hello world"),(1000,2000,"hello world again"),
              (1500,1500,"hello world again"),(4000,1000,"hello world again")]]
-    rows=parse_captions(json.dumps({"events":events}),"json3",True)
+    from backend.app.adapters.ffmpeg import _srt_time
+    vtt="WEBVTT\n\n"+"\n\n".join(f"{_srt_time(e['tStartMs'])} --> {_srt_time(e['tStartMs']+e['dDurationMs'])}\n{e['segs'][0]['utf8']}" for e in events)
+    rows=parse_captions(vtt,"vtt",True)
     assert [r[2] for r in rows]==["hello","world","again","hello world again"]
     assert all(a[1]<=b[0] for a,b in zip(rows,rows[1:]))
 
@@ -83,3 +85,51 @@ def test_cc_pipeline_skips_asr_but_calls_translation(monkeypatch,tmp_path):
     monkeypatch.setattr(database,"get_openai_settings",lambda:{"model":"test","base_url":"https://example.test"})
     runner._translate(task)
     assert calls==[payload]
+
+
+def test_json3_preserves_real_repetition_and_rejects_partial_transcripts():
+    events=[{"tStartMs":0,"dDurationMs":2000,"segs":[{"utf8":"no no"}]},
+            {"tStartMs":1000,"dDurationMs":2000,"aAppend":1,"segs":[{"utf8":"no thanks"}]}]
+    assert [r[2] for r in parse_captions(json.dumps({"events":events}),"json3",True)]==["no no","no thanks"]
+    events.append({"tStartMs":2500,"aAppend":1,"segs":[{"utf8":"missing duration"}]})
+    with pytest.raises(ValueError,match="reliable timing"):
+        parse_captions(json.dumps({"events":events}),"json3",True)
+    events[-1]['segs']=[{'utf8':'\n'}]
+    assert len(parse_captions(json.dumps({"events":events}),"json3",True))==2
+
+
+def test_bad_json3_tries_vtt_for_same_manual_track(tmp_path):
+    (tmp_path/'metadata').mkdir();(tmp_path/'media').mkdir()
+    class Ydl:
+        def urlopen(self,url):
+            if url.endswith('json3'):
+                return io.BytesIO(b'{"events":[{"tStartMs":0,"segs":[{"utf8":"hello"}]}]}')
+            return io.BytesIO(b'WEBVTT\n\n00:00.000 --> 00:01.000\nhello\n')
+    download_assets(Ydl(),{'subtitles':{'en':[track(url='https://example.test/json3'),track('vtt','https://example.test/vtt')]}},tmp_path,'en')
+    assert json.loads((tmp_path/'metadata/source_subtitles.json').read_text())['subtitle_source']['kind']=='manual'
+
+
+def test_captions_real_translation_artifact_and_audio_slice_contract(monkeypatch,tmp_path):
+    from backend.app.adapters import openai_translate as tr, audio
+    from backend.app.adapters.ffmpeg import write_srt
+    from backend.app.sources import detect_source
+    from pydub import AudioSegment
+    (tmp_path/'metadata').mkdir();(tmp_path/'media').mkdir()
+    class Ydl:
+        def urlopen(self,url):return io.BytesIO(b'WEBVTT\n\n00:00.500 --> 00:01.500\nhello\n')
+    download_assets(Ydl(),{'subtitles':{'en':[track('vtt')]}},tmp_path,'en')
+    monkeypatch.setattr(tr,'preprocess',lambda *a,**k:tr.PreprocessResponse())
+    monkeypatch.setattr(tr,'translate_batch',lambda texts,*a,**k:[tr.TranslationItem(dst='你好',audio_mode='tts') for _ in texts])
+    output=tr.translate_asr(tmp_path/'metadata/source_subtitles.json',tmp_path,{},detect_source('https://www.youtube.com/watch?v=abcdefghijk'))
+    item=json.loads(output.read_text(encoding='utf-8'))['translation'][0]
+    assert (item['src'],item['start_time'],item['end_time'],item['speaker'])==('hello',500,1500,'1')
+    vocals=tmp_path/'media/vocals.wav'
+    AudioSegment.silent(duration=2500).export(vocals,format='wav')
+    clips=audio.split_audio_by_translation(vocals,output,tmp_path)
+    assert len(AudioSegment.from_wav(clips/'0001.wav'))==1240
+    assert '00:00:00,500 --> 00:00:01,500' in write_srt(output,tmp_path).read_text(encoding='utf-8')
+
+
+def test_partial_vtt_is_rejected_instead_of_losing_a_cue():
+    with pytest.raises(ValueError):
+        parse_captions('WEBVTT\n\n00:00.000 --> 00:01.000\nhello\n\nBAD --> 00:02.000\nworld\n','vtt')
