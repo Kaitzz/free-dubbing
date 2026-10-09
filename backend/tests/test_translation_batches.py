@@ -180,3 +180,37 @@ def test_single_item_fallback_cannot_restore_spoken_original(monkeypatch):
         return entry if "item" in request else {"translations": [{"id": 1, **entry}]}
     with pytest.raises(RuntimeError, match="requires audio_mode tts"):
         run(monkeypatch, fake, ["anyone feeling attacked."])
+
+
+@pytest.mark.parametrize("text", ["(upbeat music)", "(clock ticking)", "[soft piano music]", "(audience laughing)"])
+def test_descriptive_manual_sound_cues_allowed(monkeypatch,text):
+    def fake(*args):
+        return {"translations":[{"id":1,"dst":"（声音）","audio_mode":"original"}]}
+    assert run(monkeypatch,fake,[text])[0].audio_mode=="original"
+
+
+@pytest.mark.parametrize("text", ["I like upbeat music.", "(I like upbeat music)", "(clock ticking) I know what you mean", "(Music) hello"])
+def test_descriptive_cues_do_not_admit_dialogue(text):
+    assert not t._allows_original(text)
+
+
+def test_missing_mode_is_inferred_without_retries(monkeypatch):
+    calls=[]
+    def fake(client,model,system,user):
+        items=json.loads(user)["items"];calls.append(items)
+        return {"translations":[{"id":x["id"],"dst":"中文译文"} for x in items]}
+    result=run(monkeypatch,fake,["But for whatever reason in that moment,", "(upbeat music)"])
+    assert [x.audio_mode for x in result]==["tts","original"]
+    assert len(calls)==1
+
+
+def test_missing_mode_does_not_accept_empty_spoken_translation():
+    with pytest.raises(ValueError):
+        t._parse_source_translation({"dst":""},"anyone feeling attacked.")
+
+
+def test_single_retry_accepts_missing_mode_for_valid_translation(monkeypatch):
+    def fake(client,model,system,user):
+        request=json.loads(user)
+        return {"dst":"正常译文"} if "item" in request else {"translations":[]}
+    assert run(monkeypatch,fake,["Hello there."])[0].audio_mode=="tts"

@@ -285,7 +285,6 @@ def test_translate_sentence_keeps_mixed_speech_in_tts_mode(monkeypatch):
 @pytest.mark.parametrize(
     "response",
     [
-        {"dst": "Hello"},
         {"dst": "Hello", "audio_mode": "invalid"},
         {"dst": "", "audio_mode": "tts"},
     ],
@@ -405,14 +404,14 @@ def test_japanese_to_chinese_prompt_and_audio_mode_response_contract(monkeypatch
         "_call_json",
         lambda *args, **kwargs: {"dst": "今天天气很好。"},
     )
-    with pytest.raises(RuntimeError, match="Batch translation failed"):
-        openai_translate.translate_batch(
-            ["今日はいい天気です。"],
-            JA_SOURCE,
-            {},
-            PreprocessResponse(),
-            base_url="u",
-            api_key="k",
-            model="m",
-            concurrency=1,
-        )
+    recovered = openai_translate.translate_batch(
+        ["今日はいい天気です。"], JA_SOURCE, {}, PreprocessResponse(),
+        base_url="u", api_key="k", model="m", concurrency=1,
+    )
+    assert recovered[0].model_dump() == {"dst": "今天天气很好。", "audio_mode": "tts"}
+
+
+def test_single_translation_infers_missing_mode(monkeypatch):
+    monkeypatch.setattr(openai_translate, "_call_json", lambda *a, **k: {"dst": "你好"})
+    result = openai_translate.translate_sentence("Hello", "zh", object(), "m", "sys")
+    assert result.audio_mode == "tts"

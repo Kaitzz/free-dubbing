@@ -73,13 +73,33 @@ def _allows_original(text: str) -> bool:
     cleaned = re.sub(r"\[([^\]]*)\]|\(([^)]*)\)|（([^）]*)）",
                      lambda m: " " + next(g for g in m.groups() if g is not None) + " ", text)
     cleaned = re.sub(r"[♪♫.,!?:;…。，！？、\s]+", " ", cleaned).strip().casefold()
-    return (not cleaned or cleaned in _NONVERBAL
+    # Descriptive sound cues must be fully bracketed. Never classify speech
+    # merely because it mentions music or a clock.
+    bracketed = bool(re.fullmatch(r"\s*(?:\[[^\]]+\]|\([^)]*\)|（[^）]*）)\s*", text))
+    descriptive_sound = bracketed and bool(re.fullmatch(
+        r"(?:(?:upbeat|soft|gentle|dramatic|somber|sad|happy|cheerful|loud|quiet|tense|background|instrumental|piano|orchestral|electronic|jazz|rock) +)*music"
+        r"|(?:clock|watch) ticking|(?:audience |crowd )?(?:applause|laughing|laughter|cheering)"
+        r"|(?:phone|telephone|doorbell) ringing|(?:door )?(?:creaking|slamming)|birds chirping",
+        cleaned))
+    return (not cleaned or cleaned in _NONVERBAL or descriptive_sound
             or bool(re.fullmatch(r"(?:um+|uh+|hmm+|hm+|erm+|嗯+|呃+)(?: (?:um+|uh+|hmm+|hm+|erm+|嗯+|呃+))*", cleaned)))
 
 
 def _validate_source_mode(item: TranslationItem, source_text: str) -> None:
     if item.audio_mode == "original" and not _allows_original(source_text):
         raise ValueError("Spoken source text requires audio_mode tts and a nonempty translation")
+
+
+def _parse_source_translation(data: dict, source_text: str) -> TranslationItem:
+    # Missing routing metadata is repairable from source text. A model's
+    # explicit original classification for spoken dialogue is still rejected.
+    candidate = dict(data)
+    if "audio_mode" not in candidate:
+        candidate["audio_mode"] = "original" if _allows_original(source_text) else "tts"
+    item = TranslationItem.model_validate(candidate)
+    _validate_source_mode(item, source_text)
+    return item
+
 
 def list_models(*, base_url: str, api_key: str) -> list[str]:
     if not api_key:
@@ -219,8 +239,7 @@ def translate_sentence(
     for attempt in range(TRANSLATE_RETRY):
         try:
             data = _call_json(client, model, system, text)
-            item = TranslationItem.model_validate(data)
-            _validate_source_mode(item, text)
+            item = _parse_source_translation(data, text)
             return item.model_copy(update={"dst": _post_process(item.dst, target_language)})
         except (json.JSONDecodeError, ValidationError, ValueError) as exc:
             last_error = exc
@@ -290,9 +309,8 @@ def _validated_entries(data: dict, expected: set[int], language: str, sources: d
             duplicate.add(item_id)
         seen.add(item_id)
         try:
-            item = TranslationItem.model_validate(row)
-            if sources is not None:
-                _validate_source_mode(item, sources[item_id])
+            item = (_parse_source_translation(row, sources[item_id]) if sources is not None
+                    else TranslationItem.model_validate(row))
         except ValueError:
             continue
         found[item_id] = item.model_copy(update={"dst": _post_process(item.dst, language)})
@@ -363,10 +381,9 @@ Use audio_mode original only for the nonverbal/filler cases allowed above.
             try:
                 data = _call_json(client, model, single_system, json.dumps(
                     {"item": item, "context": _retry_context(pending, context)}, ensure_ascii=False))
-                if set(data) != {"dst", "audio_mode"}:
+                if set(data) not in ({"dst", "audio_mode"}, {"dst"}):
                     raise ValueError("Expected only dst and audio_mode in single-item response")
-                translated = TranslationItem.model_validate(data)
-                _validate_source_mode(translated, item["text"])
+                translated = _parse_source_translation(data, item["text"])
                 found[item["id"]] = translated.model_copy(update={"dst": _post_process(translated.dst, language)})
                 return found
             except ValidationError as exc:
