@@ -219,7 +219,7 @@ def run_job(client, job):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--url',required=True)
-    parser.add_argument('--minutes',type=int,default=120)
+    parser.add_argument('--minutes',type=int,default=480)
     args=parser.parse_args()
     parsed=urlparse(args.url)
     if parsed.scheme!='https' or parsed.username or parsed.password or parsed.query or parsed.fragment:
