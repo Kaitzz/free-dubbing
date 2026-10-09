@@ -303,7 +303,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
             <CardHeader><CardTitle>{t.task.sourceAssets}</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               {task.source_assets?.thumbnail ? (
-                <a href={`/api/tasks/${task.id}/source-asset/thumbnail?download=1`} className="block text-sm text-[#00aeec]">
+                <a href={`/downloads/${task.id}/cover`} className="block text-sm text-[#00aeec]">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={`/api/tasks/${task.id}/source-asset/thumbnail`} alt={t.task.cover} className="mb-2 max-h-64 rounded-md object-contain" />
                   {t.task.cover} · {t.task.download}

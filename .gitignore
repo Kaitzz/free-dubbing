@@ -206,3 +206,7 @@ youdub-pipeline-colab.zip
 .tools/
 remote-runs/
 youdub-colab-worker.zip
+
+# Next.js download routes are source code, not downloaded media.
+!apps/web/src/app/downloads/
+!apps/web/src/app/downloads/**

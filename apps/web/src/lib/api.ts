@@ -365,7 +365,7 @@ export function finalVideoUrl(taskId: string) {
 }
 
 export function finalVideoDownloadUrl(taskId: string) {
-  return `/api/tasks/${taskId}/artifact/final-video?download=1`
+  return `/downloads/${taskId}/video`
 }
 
 

@@ -673,7 +673,13 @@ def source_asset(task_id: str, name: str, download: bool = False) -> FileRespons
         raise HTTPException(status_code=404, detail="Source asset is not available.")
     media_type = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
                   ".srt": "application/x-subrip"}[path.suffix]
-    return FileResponse(path, media_type=media_type, filename=path.name if download else None)
+    filename = None
+    if download:
+        from .video_export import export_info, _clean
+        info = export_info(task)
+        label = "cover" if name == "thumbnail" else "source-subtitles"
+        filename = f"{_clean(info['title'], 100)} [{_clean(info['source_video_id'], 40)}] - {label}{path.suffix}"
+    return FileResponse(path, media_type=media_type, filename=filename)
 
 
 @app.get("/api/tasks/{task_id}/artifact/final-video")
