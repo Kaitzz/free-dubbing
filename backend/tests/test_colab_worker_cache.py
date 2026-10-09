@@ -81,3 +81,50 @@ def test_transcript_export_prefers_fixed_and_retains_source(tmp_path):
     assert (metadata/'transcript.txt').read_text()=='fixed\n'
     assert '00:00:01,000 --> 00:00:02,500' in (metadata/'transcript.srt').read_text()
     assert 'raw' in (metadata/'asr.json').read_text()
+
+
+def test_concurrent_log_flush_serializes_batches():
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from types import SimpleNamespace
+    logs = colab_worker.PendingLogs()
+    logs.add('first')
+    entered, release, second_started = threading.Event(), threading.Event(), threading.Event()
+    received = []
+    def post(url, *, json, timeout):
+        received.append(json['log'])
+        if len(received) == 1:
+            entered.set()
+            assert release.wait(3)
+        return SimpleNamespace(raise_for_status=lambda: None)
+    client = SimpleNamespace(post=post)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(logs.send, client, '/job', {})
+        assert entered.wait(3)
+        logs.add('added during request')
+        def second_send():
+            second_started.set()
+            return logs.send(client, '/job', {})
+        second = pool.submit(second_send)
+        assert second_started.wait(3)
+        release.set()
+        first.result(timeout=3); second.result(timeout=3)
+    assert received == ['first', 'added during request']
+    assert not logs.lines
+
+
+def test_failed_log_send_keeps_batch_for_retry():
+    from types import SimpleNamespace
+    import pytest
+    logs = colab_worker.PendingLogs(); logs.add('retain me')
+    def fail(): raise RuntimeError('request failed')
+    client = SimpleNamespace(post=lambda *a, **kw: SimpleNamespace(raise_for_status=fail))
+    with pytest.raises(RuntimeError): logs.send(client, '/job', {})
+    assert list(logs.lines) == ['retain me']
+    received = []
+    def post(*a, **kw):
+        received.append(kw['json']['log'])
+        return SimpleNamespace(raise_for_status=lambda: None)
+    logs.send(SimpleNamespace(post=post), '/job', {})
+    assert received == ['retain me']
+    assert not logs.lines

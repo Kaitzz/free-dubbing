@@ -82,21 +82,24 @@ class PendingLogs:
     def __init__(self):
         self.lines = deque()
         self.lock = threading.Lock()
+        self.send_lock = threading.Lock()
 
     def add(self, line):
         with self.lock:
             self.lines.append(line.strip()[:1800])
 
     def send(self, client, prefix, data):
-        with self.lock:
-            batch = list(self.lines)[:8]
-        response = client.post(prefix+'/heartbeat',
-                               json={**data, 'log': '\n'.join(batch)}, timeout=20)
-        response.raise_for_status()
-        with self.lock:
-            for _ in batch:
-                self.lines.popleft()
-        return response
+        # Serialize sends through acknowledgement; producers can still append.
+        with self.send_lock:
+            with self.lock:
+                batch = list(self.lines)[:8]
+            response = client.post(prefix+'/heartbeat',
+                                   json={**data, 'log': '\n'.join(batch)}, timeout=20)
+            response.raise_for_status()
+            with self.lock:
+                for _ in batch:
+                    self.lines.popleft()
+            return response
 
 
 def run_job(client, job):
