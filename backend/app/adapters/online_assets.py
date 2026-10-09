@@ -137,6 +137,23 @@ def _image_size(data):
     return width, height
 
 
+
+def convert_cover(data: bytes, image_format: str = "jpg") -> bytes:
+    """Encode the actual image format, without scaling the source image."""
+    if image_format not in {"jpg", "png"}:
+        raise ValueError("Cover format must be jpg or png")
+    if image_format == "jpg" and data.startswith(b"\xff\xd8\xff"):
+        return data
+    from ..config import ffmpeg_binary
+    codec = ["-c:v", "mjpeg", "-q:v", "2", "-pix_fmt", "yuvj444p"] if image_format == "jpg" else ["-c:v", "png"]
+    result = subprocess.run([ffmpeg_binary(), "-hide_banner", "-loglevel", "error",
+        "-i", "pipe:0", "-frames:v", "1", *codec, "-f", "image2pipe", "pipe:1"],
+        input=data, capture_output=True, timeout=30)
+    signature = b"\xff\xd8\xff" if image_format == "jpg" else b"\x89PNG\r\n\x1a\n"
+    if result.returncode or not result.stdout.startswith(signature):
+        raise ValueError("Cover image conversion failed")
+    return result.stdout
+
 def download_cover(ydl, info, session):
     media = session / "media"
     best = None
@@ -147,6 +164,8 @@ def download_cover(ydl, info, session):
         try:
             size = _image_size(path.read_bytes())
             if min(size) >= 720:
+                if path.suffix != ".jpg":
+                    (media / "thumbnail.jpg").write_bytes(convert_cover(path.read_bytes()))
                 return
         except Exception:
             pass
@@ -167,7 +186,7 @@ def download_cover(ydl, info, session):
             continue
     if best:
         _, data, ext, width, height = best
-        target = media / f"thumbnail.{ext}"
+        target = media / "thumbnail.jpg"
         # Do not replace a usable larger image with a smaller fallback.
         for previous in media.glob("thumbnail.*"):
             if previous.suffix in {".jpg", ".png", ".webp"}:
@@ -177,6 +196,7 @@ def download_cover(ydl, info, session):
                         return
                 except Exception:
                     pass
+        data = convert_cover(data)
         target.write_bytes(data)
         for previous in media.glob("thumbnail.*"):
             if previous != target and previous.suffix in {".jpg", ".png", ".webp"}:
