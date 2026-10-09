@@ -65,6 +65,7 @@ def _ydl_base(source: SourceConfig, proxy_port: str = "") -> dict[str, Any]:
     opts: dict[str, Any] = {
         "noplaylist": True,
         "quiet": True,
+        "noprogress": True,
         "no_warnings": False,
         "js_runtimes": {"node": {}},
         "http_headers": {"User-Agent": DEFAULT_USER_AGENT},

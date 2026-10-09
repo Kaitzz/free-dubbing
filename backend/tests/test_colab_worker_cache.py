@@ -34,3 +34,19 @@ def test_console_keeps_errors_and_stages_without_progress_spam():
     assert colab_worker.console_line("WARNING: missing format")
     assert not colab_worker.console_line(" 50%|##### | 100/200 [00:12<00:12]")
     assert not colab_worker.console_line("ordinary model debug detail")
+
+
+def test_console_hides_ytdlp_progress_but_keeps_download_diagnostics():
+    for line in (
+        "[download]   0.0% of 18.04MiB at Unknown B/s ETA Unknown",
+        "[download] 100% of 18.04MiB in 00:00:00 at 38.33MiB/s",
+        "[download]  55.1% of 18.04MiB at 60.87MiB/s ETA 00:00",
+    ):
+        assert not colab_worker.console_line(line)
+    for line in (
+        "[download] Started", "[download] Completed",
+        "[download] Available formats: video=21, audio=9",
+        "[download] ERROR: unable to download video",
+        "[download] Got error: HTTP Error 403. Retrying fragment 1",
+    ):
+        assert colab_worker.console_line(line)

@@ -4,6 +4,7 @@ import argparse
 from collections import deque
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import sqlite3
@@ -47,7 +48,8 @@ def snapshot(job_dir, original, exitcode=None):
 def console_line(line):
     """Keep phase messages and warnings; detailed output stays in the local log."""
     value = line.strip()
-    if not value or ('%' in value and '|' in value):
+    if (not value or ('%' in value and '|' in value)
+            or re.match(r'^\[download\]\s+\d+(?:\.\d+)?%', value)):
         return False
     return (value.startswith(('Task ', 'Device plan:', '['))
             or any(word in value.lower() for word in ('warning', 'error', 'failed', 'traceback')))

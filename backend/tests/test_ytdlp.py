@@ -29,6 +29,8 @@ def test_ytdlp_proxy_port_takes_priority(monkeypatch, tmp_path):
     source = _make_source(use_proxy=True, cookie_dir=tmp_path)
 
     options = ytdlp._ydl_base(source, "7890")
+    assert options["noprogress"] is True
+    assert options["no_warnings"] is False
 
     assert options["proxy"] == "http://127.0.0.1:7890"
 
