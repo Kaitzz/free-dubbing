@@ -5,7 +5,7 @@ import json
 import math
 import re
 from pathlib import Path
-from .online_assets import _text
+from .online_assets import _spoken
 
 
 def timed_fragments(content: str) -> list[dict]:
@@ -16,7 +16,8 @@ def timed_fragments(content: str) -> list[dict]:
         if not isinstance(start, (int, float)) or not isinstance(duration, (int, float)):
             continue
         for index, part in enumerate(event.get("segs", [])):
-            text = _text(part.get("utf8", ""))
+            # Cleaned like parse_captions, so a removed [music] tag leaves no word behind.
+            text = _spoken(part.get("utf8", ""))
             if not text:
                 continue
             offset = part.get("tOffsetMs", 0 if index == 0 else None)

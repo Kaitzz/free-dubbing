@@ -60,3 +60,12 @@ def test_regroup_crosses_screen_cue_boundaries(tmp_path):
     result=regroup(payload,path)
     assert len(result["result"]["utterances"])==1
     assert result["result"]["text"]=="We want to explain."
+
+
+def test_sound_tags_inside_a_sentence_leave_no_words(tmp_path):
+    payload,path=fixture(tmp_path,[{"tStartMs":0,"dDurationMs":4000,"segs":[
+        {"utf8":"They"},{"utf8":" will","tOffsetMs":300},{"utf8":" >>","tOffsetMs":500},
+        {"utf8":" [music]","tOffsetMs":600},{"utf8":" win","tOffsetMs":1200},{"utf8":" today.","tOffsetMs":1500}]}])
+    assert [w["text"] for w in timed_fragments(path.read_text())]==["They","will","win","today."]
+    result=regroup(payload,path,4000)
+    assert [u["text"] for u in result["result"]["utterances"]]==["They will win today."]

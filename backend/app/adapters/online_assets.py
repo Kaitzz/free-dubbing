@@ -30,6 +30,18 @@ def _text(value):
     return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]*>", "", value))).strip()
 
 
+# Not speech: sound cues ([Music], (gentle music)), speaker labels ([Carl]), sung
+# lyrics, and auto-caption speaker-change markers. Left in, they become cues of
+# their own or split sentences around a short sound effect.
+_ANNOTATION = re.compile(r"\[[^\]]*\]|\([^)]*\)|（[^）]*）|[♪♫][^♪♫]*[♪♫]|[♪♫]|>>")
+
+
+def _spoken(value):
+    text = _ANNOTATION.sub(" ", _text(value))
+    # Dialogue dashes that open each speaker's line in manual captions.
+    return re.sub(r"\s+", " ", re.sub(r"(^|\s)[-–]+(?=\s|$)", r"\1", text)).strip()
+
+
 def _clock(value):
     fields = value.replace(",", ".").split(":")
     total = 0.0
@@ -42,9 +54,9 @@ def parse_captions(content, ext, automatic=False):
     rows = []
     if ext == "json3":
         for event in json.loads(content).get("events", []):
-            text = _text("".join(segment.get("utf8", "") for segment in event.get("segs", [])))
+            text = _spoken("".join(segment.get("utf8", "") for segment in event.get("segs", [])))
             if not text:
-                continue  # Window styling and newline-only append events.
+                continue  # Window styling, newline-only append and sound-cue-only events.
             if "tStartMs" not in event or "dDurationMs" not in event:
                 raise ValueError("Text event lacks reliable timing; try another format")
             start = round(float(event["tStartMs"]))
@@ -59,7 +71,7 @@ def parse_captions(content, ext, automatic=False):
             raise ValueError("Some subtitle timing blocks could not be parsed")
         for match in matches:
             start, end = _clock(match[1]), _clock(match[2])
-            text = _text(match[3])
+            text = _spoken(match[3])
             if text:
                 if not end > start >= 0:
                     raise ValueError("Invalid caption timing")

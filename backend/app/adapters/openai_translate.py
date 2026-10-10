@@ -507,6 +507,8 @@ def translate_asr(
     if len(translated_items) != len(utterances):
         raise RuntimeError("Translation count does not match input segments")
 
+    # Non-speech (sound cues, laughter, fillers) is dropped rather than replayed
+    # from the original audio: no subtitle, no dub, no break inside a sentence.
     translation = [
         {
             "src": text,
@@ -519,7 +521,12 @@ def translate_asr(
             "speaker": _speaker(utt),
         }
         for text, translated, utt in zip(texts, translated_items, utterances)
+        if translated.audio_mode != "original"
     ]
+    if not translation:
+        raise RuntimeError("No speech left to translate after dropping non-speech segments")
+    if len(translation) < len(utterances):
+        print(f"[translate] Dropped {len(utterances) - len(translation)} non-speech segments", flush=True)
     output_file.write_text(
         json.dumps({"translation": translation}, ensure_ascii=False, indent=2),
         encoding="utf-8",

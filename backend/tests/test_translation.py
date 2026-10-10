@@ -415,3 +415,35 @@ def test_single_translation_infers_missing_mode(monkeypatch):
     monkeypatch.setattr(openai_translate, "_call_json", lambda *a, **k: {"dst": "你好"})
     result = openai_translate.translate_sentence("Hello", "zh", object(), "m", "sys")
     assert result.audio_mode == "tts"
+
+
+def test_translate_asr_drops_non_speech_segments(tmp_path, monkeypatch):
+    metadata = tmp_path / "metadata"
+    metadata.mkdir()
+    asr_file = metadata / "asr.json"
+    _write_asr(asr_file, 3)
+    _stub_preprocess(monkeypatch)
+
+    def fake(texts, source, meta, pre, **kw):
+        # S1 is a sound cue: the translator routes it to the original audio.
+        return [openai_translate.TranslationItem(dst="（音乐）", audio_mode="original") if t == "S1."
+                else openai_translate.TranslationItem(dst=f"zh:{t}", audio_mode="tts") for t in texts]
+
+    monkeypatch.setattr(openai_translate, "translate_batch", fake)
+    out = openai_translate.translate_asr(asr_file, tmp_path, _settings(), YT_SOURCE)
+    items = json.loads(out.read_text(encoding="utf-8"))["translation"]
+    assert [i["dst"] for i in items] == ["zh:S0.", "zh:S2."]
+    assert [i["start_time"] for i in items] == [0, 2000]
+
+
+def test_translate_asr_fails_when_nothing_is_speech(tmp_path, monkeypatch):
+    metadata = tmp_path / "metadata"
+    metadata.mkdir()
+    asr_file = metadata / "asr.json"
+    _write_asr(asr_file, 1)
+    _stub_preprocess(monkeypatch)
+    monkeypatch.setattr(openai_translate, "translate_batch", lambda texts, *a, **kw:
+                        [openai_translate.TranslationItem(dst="", audio_mode="original") for _ in texts])
+    with pytest.raises(RuntimeError, match="No speech left"):
+        openai_translate.translate_asr(asr_file, tmp_path, _settings(), YT_SOURCE)
+    assert not (metadata / "translation.zh.json").exists()

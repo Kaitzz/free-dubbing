@@ -88,6 +88,10 @@ What follows from this:
   - Stage handlers import their adapters lazily.
   - On an exception, the current stage and the task are marked failed. `/resume` resets failed and running stages to pending.
 - **Shortcuts that skip models.** An uploaded translated SRT (local uploads only) replaces both ASR and translation (`adapters/local_subtitles.py`). YouTube captions fetched during download (`adapters/online_assets.py`, saved to `metadata/source_subtitles.json`) replace SenseVoice. Automatic captions are regrouped in `asr_fix` (`adapters/source_caption_segments.py`).
+- **Only speech is dubbed.** The product assumes videos without background music, and short sound effects may be lost.
+  - Caption annotations are stripped as captions are parsed (`online_assets._spoken`, also used for auto-caption word fragments): sound cues like `[Music]` and `(gentle music)`, speaker labels, `♪` lyrics, `>>` markers and dialogue dashes. They never become cues and never split a sentence.
+  - `translate_asr` drops every segment the translator marks `audio_mode: original` (sound cues, laughter, fillers), so such segments get no subtitle, no dub and no spliced-in original audio.
+  - The original-audio paths in TTS and `merge_tts_audio` remain only for translation files written before this change.
 - **Sources and task ids.** `sources.detect_source(url)` maps a task URL to a source and language pair: YouTube en→zh, Bilibili zh→en, and `local://upload/<task_id>?direction=en-zh|ja-zh|zh-en`. URL tasks use the video id as the task id, with `-<output_mode>` appended unless the mode is `both`. Resubmitting a URL therefore returns the existing task.
 - **Adapters** live in `backend/app/adapters/`:
   - `ytdlp` and `local_video`: input.

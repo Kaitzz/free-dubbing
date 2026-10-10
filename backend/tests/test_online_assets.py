@@ -169,3 +169,14 @@ def test_cover_rejects_low_res_placeholder_as_hd_and_tries_next(tmp_path,monkeyp
     a.download_cover(Ydl(),{'thumbnails':[{'url':'https://example.test/maxresdefault.jpg'},
                                         {'url':'https://example.test/hq720.jpg'}]},tmp_path)
     assert (tmp_path/'media/thumbnail.jpg').read_bytes()==high
+
+
+def test_caption_annotations_are_not_speech():
+    srt = ("1\n00:00:01,000 --> 00:00:03,000\n(gentle music)\n\n"
+           "2\n00:00:03,000 --> 00:00:05,000\n- [Carl] Mark, you've made a demon\nout of me,\n\n"
+           "3\n00:00:05,000 --> 00:00:06,000\n♪ la la la ♪\n\n"
+           "4\n00:00:06,000 --> 00:00:08,000\nwell-known >> [Music] tricks - right?\n")
+    assert parse_captions(srt, "srt") == [
+        [3000, 5000, "Mark, you've made a demon out of me,"],
+        [6000, 8000, "well-known tricks right?"],
+    ]
