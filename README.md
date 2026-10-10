@@ -16,7 +16,7 @@
 
 一个被真实创作者工作流验证过的开源视频本地化工具。
 
-YouDub WebUI 可以把单个 YouTube、Bilibili 或本地视频转换成目标语言版本：导入视频、识别并翻译内容，再按任务选择输出保留原音的硬字幕视频、无硬字幕的配音视频，或同时包含硬字幕与配音的视频。配音模式还会分离人声与背景音、生成配音并完成混音，最终视频可在网页中播放和下载。
+YouDub WebUI 可以把单个 YouTube、Bilibili 或本地视频转换成目标语言版本：导入视频、识别并翻译内容，再按任务选择输出保留原音的硬字幕视频、无硬字幕的配音视频，或同时包含硬字幕与配音的视频。配音模式以原视频音轨作为声音参考生成配音，成品只保留配音，不保留原视频的背景音乐与音效；最终视频可在网页中播放和下载。
 
 核心成熟场景是 **YouTube 英文 -> 中文配音**；同时已经支持 **Bilibili 中文 -> 英文配音**，并接入本地视频 **日文 -> 中文配音**。日译中方向已通过自动化参数链路和回归测试，尚未使用真实日语媒体完成模型效果验收。
 
@@ -30,7 +30,7 @@ English README: [README.en.md](README.en.md) · 作者：[刘朝 Zhao Liu](https
 
 ## 效果示例
 
-下面两组样例均由本项目真实生成，可以在 GitHub 页面直接播放。左侧是原视频，右侧是自动生成的配音版本；配音版包含目标语言语音和字幕，同时保留原视频的背景音乐与音效。
+下面两组样例均由本项目真实生成，可以在 GitHub 页面直接播放。左侧是原视频，右侧是自动生成的配音版本；配音版包含目标语言语音和字幕。这两组样例由早期版本生成，保留了背景音乐与音效；当前版本不做人声分离，成品只有配音。
 
 ### 1. Jensen Huang on Nvidia's Competition
 
@@ -80,7 +80,7 @@ https://github.com/user-attachments/assets/158de60a-7de4-4ddf-b3d8-478d0423aee6
 
 - **Windows 10/11 + PowerShell 5.1+**：推荐开发环境，也是本文档优先覆盖的平台。
 - **Linux / WSL2 / macOS**：后端和前端命令按 POSIX shell 给出；CUDA、FFmpeg、PyTorch/音频依赖需要按各平台实际环境安装。
-- **CUDA GPU**：推荐用于完整视频处理。`DEVICE=cpu` 可以运行部分流程，但完整转写、分离、TTS 会非常慢；`DEVICE=mps` 会让 SenseVoice 自动退回 CPU 作为保守的 CTC 对齐兼容策略。
+- **CUDA GPU**：推荐用于完整视频处理。`DEVICE=cpu` 可以运行部分流程，但完整转写、TTS 会非常慢；`DEVICE=mps` 会让 SenseVoice 自动退回 CPU 作为保守的 CTC 对齐兼容策略。
 
 基础依赖：
 
@@ -139,10 +139,7 @@ Windows PowerShell、macOS 和 Linux 通用：
 ```powershell
 git clone https://github.com/liuzhao1225/YouDub-webui.git
 cd YouDub-webui
-git submodule update --init --recursive
 ```
-
-Demucs 以源码子模块引入，请不要跳过 `git submodule update`。
 
 ### 3. 安装依赖
 
@@ -184,7 +181,7 @@ python3.12 -m venv .venv
 
 #### 可选：NVIDIA CUDA GPU
 
-如果要用 NVIDIA GPU 跑 SenseVoice、Demucs 或 VoxCPM，请在安装 `requirements.txt` 之前先安装 CUDA 版 PyTorch：
+如果要用 NVIDIA GPU 跑 SenseVoice 或 VoxCPM，请在安装 `requirements.txt` 之前先安装 CUDA 版 PyTorch：
 
 Windows PowerShell：
 
@@ -264,9 +261,8 @@ macOS / Linux / WSL2：
 | `YOUDUB_AUTH_COOKIE_SECURE` | HTTPS 部署必须设为 `true`；仅可信的本机 HTTP 开发可设为 `false`。 |
 | `YOUDUB_AUTH_COOKIE_SAMESITE` | 会话 Cookie 的 SameSite 策略，可选 `lax` 或 `strict`；同源代理部署建议 `strict`。 |
 | `DEVICE` | 模型运行设备，例如 `auto`、`cuda`、`cuda:0`、`mps`、`mps:0` 或 `cpu`；`auto` 按 CUDA、MPS、CPU 顺序选择。 |
-| `DEMUCS_DEVICE` / `FUNASR_DEVICE` | 可选组件级设备覆盖；留空时使用 `DEVICE`。SenseVoice 选择 MPS 时会退回 CPU，作为保守的 CTC 对齐兼容策略。 |
-| `DEMUCS_CHUNK_SECONDS` | 人声分离的分块长度，必须为正整数，默认 `600`（10 分钟）。内存峰值由单个“分块 + 10 秒上下文”的推理和两份 10 秒 overlap tail 决定；每块写出后，完整输入与输出张量会在下一块推理前释放，跨块只保留两份 tail，内存不会随视频总长或分块数累积。默认窗口约 2.8 GiB 仅作参考，实际峰值还取决于模型、`shifts`、设备和底层库。首音轨以 float32 解码：mono 复制为双声道，双声道及以上只取前两个声道。临时输入使用 FFmpeg WAV `-rf64 auto`，超过 RIFF 上限时自动切换 RF64；两份 float32 stem 和两份最终 PCM16 输出固定使用 RF64，消除普通 WAV 的 4 GiB 边界。临时字节数约为“时长秒 × 采样率 × 声道数 × (4 + 4 × 2)”；按 44.1 kHz 双声道估算为 3.55 GiB/小时，写入最终输出时还需 1.18 GiB/小时，建议至少预留 4.73 GiB/小时。临时文件在成功或失败后都会清理。 |
-| `RELEASE_GPU_MEMORY_AFTER_STAGE` | 默认 `true`。Demucs、SenseVoice、VoxCPM 阶段结束后释放模型引用和可用的 CUDA/MPS 缓存，并在任务结束时再次清理。单线程流水线在同一任务中不会再次使用这些模型；设为 `false` 可保留跨任务模型缓存、减少重新加载耗时，同时会增加显存持续占用和 OOM 风险。接受 `1/0`、`true/false`、`yes/no`、`on/off`。 |
+| `FUNASR_DEVICE` | 可选的 SenseVoice 设备覆盖；留空时使用 `DEVICE`。SenseVoice 选择 MPS 时会退回 CPU，作为保守的 CTC 对齐兼容策略。 |
+| `RELEASE_GPU_MEMORY_AFTER_STAGE` | 默认 `true`。SenseVoice、VoxCPM 阶段结束后释放模型引用和可用的 CUDA/MPS 缓存，并在任务结束时再次清理。单线程流水线在同一任务中不会再次使用这些模型；设为 `false` 可保留跨任务模型缓存、减少重新加载耗时，同时会增加显存持续占用和 OOM 风险。接受 `1/0`、`true/false`、`yes/no`、`on/off`。 |
 | `FFMPEG_PATH` / `FFPROBE_PATH` | 可选的媒体程序完整路径；Windows 上使用 TorchCodec 时，`FFMPEG_PATH` 必须指向 shared/full-shared 构建。 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址，例如 `https://api.openai.com/v1`。 |
 | `OPENAI_API_KEY` | 翻译阶段使用的 API key。 |
@@ -280,8 +276,6 @@ macOS / Linux / WSL2：
 | `VOXCPM_MODEL` / `VOXCPM_MODEL_DIR` | VoxCPM2 的 ModelScope 模型名或本地模型目录；VoxCPM 当前由上游包内部选择 CUDA/MPS/CPU，任务日志会显示为 `voxcpm=library-auto`。 |
 | `VOXCPM_LOAD_DENOISER` / `VOXCPM_CFG_VALUE` / `VOXCPM_INFERENCE_TIMESTEPS` / `VOXCPM_MIN_REFERENCE_MS` | VoxCPM2 推理参数。 |
 | `CORS_ALLOW_ORIGINS` / `CORS_ALLOW_ORIGIN_REGEX` | 显式允许的跨源前端来源；不能使用 `*`。同源 Next 代理不需要配置。 |
-
-Demucs 分离结果采用同目录 pending 发布：handler 每次实际执行时先删除旧 final 和遗留 pending，再完整生成 `.audio_vocals.pending.wav` 与 `.audio_bgm.pending.wav`；两份文件都关闭写完后，才分别原子替换 `audio_vocals.wav` 与 `audio_bgm.wav`。普通异常会删除 pending 和已经发布的单份 final。SIGKILL 或掉电可能留下 pending 或单份 final，failed/running stage 再次恢复时会先清理并完整重算。真正 succeeded 的 stage 由 PipelineRunner 根据 stage 元数据恢复，不会再次调用 handler。
 
 默认 CORS 只允许 `localhost`、`127.0.0.1` 和 `::1` 的 `:3000`。推荐始终使用 Next.js 同源 `/api` 代理；如果浏览器确实直连不同 origin 的后端，必须把完整、可信的 origin 追加到 `CORS_ALLOW_ORIGINS`，例如 `https://youdub.example.com`。CORS 不是认证或 CSRF 防护，后端仍会校验 HttpOnly 会话 Cookie 和每会话 CSRF token。
 
@@ -379,14 +373,14 @@ API key 和 Cookie 会在页面中脱敏显示，后端不会把 Cookie 明文�
 ```text
 YouTube / Bilibili URL
   -> yt-dlp 下载单个视频
-  -> Demucs 分离人声与背景音
+  -> FFmpeg 提取原视频音轨（不做人声分离）
   -> SenseVoice 识别语音并输出词级时间戳
   -> 句子与时间范围整理
   -> OpenAI 兼容 API 预处理全文并逐句并发翻译
   -> 按输出内容分支：
      - subtitles：保留原音并压制硬字幕
-     - dubbing：生成并混合目标语言配音，不压制硬字幕
-     - both：生成并混合配音，同时压制硬字幕
+     - dubbing：生成目标语言配音并替换原音轨，不压制硬字幕
+     - both：生成配音并替换原音轨，同时压制硬字幕
   -> FFmpeg 输出最终 mp4
 ```
 
@@ -410,7 +404,6 @@ YouTube / Bilibili URL
 - Frontend: Next.js App Router, shadcn/ui, Tailwind CSS, Lucide icons
 - Backend: FastAPI, SQLite, in-process background worker
 - Download: yt-dlp
-- Source separation: Demucs source submodule
 - ASR: FunASR 1.4.16 + SenseVoiceSmall（FSMN-VAD + CTC 时间对齐）
 - Translation: OpenAI-compatible Chat Completions API
 - TTS: VoxCPM2
@@ -446,7 +439,6 @@ backend/app/       FastAPI API、任务队列、流水线和模型适配器
 backend/tests/     后端单元测试
 apps/web/          Next.js WebUI
 scripts/           辅助脚本
-submodule/demucs/  Demucs 源码子模块
 ```
 
 ## 项目状态与贡献

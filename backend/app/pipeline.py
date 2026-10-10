@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # What each succeeded stage leaves in its session, keyed by PipelineArtifacts field.
 _STAGE_ARTIFACTS: dict[str, tuple[tuple[str, str], ...]] = {
     "download": (("video_file", "media/video_source.mp4"),),
-    "separate": (("vocals_file", "media/audio_vocals.wav"), ("bgm_file", "media/audio_bgm.wav")),
+    "separate": (("vocals_file", "media/audio_vocals.wav"),),
     "asr": (("asr_file", "metadata/asr.json"),),
     "asr_fix": (("asr_fixed_file", "metadata/asr_fixed.json"),),
     "translate": (("translation_file", "metadata/translation.{target}.json"),),
@@ -46,7 +46,6 @@ class PipelineArtifacts:
     session: Path | None = None
     video_file: Path | None = None
     vocals_file: Path | None = None
-    bgm_file: Path | None = None
     asr_file: Path | None = None
     asr_fixed_file: Path | None = None
     translation_file: Path | None = None
@@ -402,16 +401,19 @@ class PipelineRunner:
         self.stage_message("download", f"[{source.name}] {title or 'Downloaded'} -> {session}")
 
     def _separate(self, _: dict) -> None:
-        from .adapters.demucs import separate_audio
+        # Videos are assumed to have no background music: the original audio is the voice
+        # track, and the final video carries only the dub, so sound effects are dropped.
+        from .adapters.source_audio import extract_audio
+        import soundfile as sf
 
         session = _require(self.artifacts.session, "session")
         video_file = _require(self.artifacts.video_file, "video_file")
-        self.artifacts.vocals_file, self.artifacts.bgm_file = separate_audio(
-            video_file,
-            session,
-            progress_callback=lambda progress, message: self.stage_progress("separate", progress, message),
+        self.artifacts.vocals_file = extract_audio(video_file, session)
+        seconds = sf.info(self.artifacts.vocals_file).duration
+        self.stage_message(
+            "separate",
+            f"Original audio ({seconds:.1f} s) -> {self.artifacts.vocals_file.name}; no vocal separation",
         )
-        self.stage_message("separate", f"Vocals: {self.artifacts.vocals_file.name}, BGM: {self.artifacts.bgm_file.name}")
 
     def _asr(self, task: dict) -> None:
         import json as _json
@@ -604,16 +606,13 @@ class PipelineRunner:
         output_mode = task.get("output_mode") or database.DEFAULT_OUTPUT_MODE
         if output_mode == "subtitles":
             dubbing_file = None
-            bgm_file = None
             subtitle_source = _require(self.artifacts.translation_file, "translation_file")
         else:
             dubbing_file = _require(self.artifacts.dubbing_file, "dubbing_file")
-            bgm_file = _require(self.artifacts.bgm_file, "bgm_file")
             subtitle_source = _require(self.artifacts.timings_file, "timings_file")
         self.artifacts.final_video = merge_video(
             video_file,
             dubbing_file,
-            bgm_file,
             subtitle_source,
             session,
             output_mode=output_mode,

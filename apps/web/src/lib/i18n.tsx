@@ -214,7 +214,7 @@ const messages: Record<UiLanguage, Messages> = {
     stages: {
       download: "Download",
       metadataDownload: "Download metadata",
-      separate: "Demucs",
+      separate: "Extract audio",
       asr: "SenseVoice",
       asr_fix: "Split sentences",
       translate: "Translate",
@@ -408,7 +408,7 @@ const messages: Record<UiLanguage, Messages> = {
     stages: {
       download: "下载视频",
       metadataDownload: "下载元数据",
-      separate: "分离人声与背景音",
+      separate: "提取音频",
       asr: "语音识别",
       asr_fix: "切分句子",
       translate: "翻译字幕",

@@ -7,7 +7,7 @@ from .config import device as default_device
 
 
 SUPPORTED_DEVICE_TYPES = {"cpu", "cuda", "mps"}
-MANAGED_COMPONENTS = ("demucs", "funasr")
+MANAGED_COMPONENTS = ("funasr",)
 PLAN_COMPONENTS = (*MANAGED_COMPONENTS, "voxcpm")
 
 CUDA_INSTALL_HINT = (

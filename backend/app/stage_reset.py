@@ -7,6 +7,8 @@ from .sources import SourceConfig
 from .stages import STAGE_NAMES
 
 
+# audio_bgm.wav and audio_mixed.m4a only exist in sessions from before vocal separation was
+# removed; listing them keeps a redo from leaving them behind.
 STAGE_OWN_ARTIFACTS: dict[str, tuple[str, ...]] = {
     "download": ("media", "metadata", "segments", "tmp"),
     "separate": ("media/audio_vocals.wav", "media/audio_bgm.wav"),

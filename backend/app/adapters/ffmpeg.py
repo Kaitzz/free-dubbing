@@ -273,7 +273,6 @@ def video_encoding_args() -> list[str]:
 def merge_video(
     video_file: Path,
     dubbing_file: Path | None,
-    bgm_file: Path | None,
     timings_file: Path,
     session: Path,
     *,
@@ -284,62 +283,36 @@ def merge_video(
 
     include_dubbing = output_mode in {"dubbing", "both"}
     include_subtitles = output_mode in {"subtitles", "both"}
-    if include_dubbing and (dubbing_file is None or bgm_file is None):
-        raise ValueError("Dubbing and background audio are required for this output mode.")
+    if include_dubbing and dubbing_file is None:
+        raise ValueError("Dubbing audio is required for this output mode.")
 
-    tmp_dir = session / "tmp"
     media_dir = session / "media"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
     media_dir.mkdir(parents=True, exist_ok=True)
     final_video = media_dir / "video_final.mp4"
 
     session_dir = session.resolve()
     video_input = video_file.resolve()
 
-    mixed_audio_output: Path | None = None
-    if include_dubbing:
-        assert dubbing_file is not None
-        assert bgm_file is not None
-        dubbing_input = dubbing_file.resolve()
-        bgm_input = bgm_file.resolve()
-        mixed_audio_output = (tmp_dir / "audio_mixed.m4a").resolve()
-        subprocess.run(
-            [
-                ffmpeg_binary(),
-                "-hide_banner", "-loglevel", "warning", "-nostats",
-                "-y",
-                "-i",
-                str(dubbing_input),
-                "-i",
-                str(bgm_input),
-                "-filter_complex",
-                "[0:a]volume=1.0[a0];[1:a]volume=0.30[a1];[a0][a1]amix=inputs=2:duration=longest:normalize=0[aout]",
-                "-map",
-                "[aout]",
-                "-c:a",
-                "aac",
-                str(mixed_audio_output),
-            ],
-            check=True,
-        )
-
     temporary_video = media_dir / f".video_final.{uuid.uuid4().hex}.mp4"
     try:
         command = [ffmpeg_binary(), "-hide_banner", "-loglevel", "warning", "-nostats", "-y", "-i", str(video_input)]
-        if mixed_audio_output is not None:
-            command.extend(["-i", str(mixed_audio_output)])
+        if include_dubbing:
+            assert dubbing_file is not None
+            command.extend(["-i", str(dubbing_file.resolve())])
         if include_subtitles:
             subtitles = write_srt(timings_file, session)
             command.extend(["-vf", subtitle_filter(video_input, subtitles, session_dir)])
         command.extend(["-map", "0:v:0"])
-        if mixed_audio_output is not None:
-            command.extend(["-map", "1:a:0"])
+        if include_dubbing:
+            # The dub is the only audio. It ends with the last line, so pad it with
+            # silence and let -shortest end the output with the video.
+            command.extend(["-map", "1:a:0", "-af", "apad"])
         else:
             command.extend(["-map", "0:a?"])
         command.extend(video_encoding_args())
-        command.extend(["-c:a", "copy" if mixed_audio_output is not None else "aac"])
+        command.extend(["-c:a", "aac"])
         command.extend(["-movflags", "+faststart"])
-        if mixed_audio_output is not None:
+        if include_dubbing:
             command.append("-shortest")
         command.append(str(temporary_video.resolve()))
         try:

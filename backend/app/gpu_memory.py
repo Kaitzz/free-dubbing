@@ -13,7 +13,7 @@ _STAGE_MODEL_MODULES = {
     "asr": (("backend.app.adapters.sensevoice_asr", "SenseVoice"),),
     "tts": (("backend.app.adapters.voxcpm", "VoxCPM"),),
 }
-_GPU_STAGES = {"separate", "asr", "tts"}
+_GPU_STAGES = {"asr", "tts"}
 _TASK_MODEL_MODULES = (
     ("backend.app.adapters.sensevoice_asr", "SenseVoice"),
     ("backend.app.adapters.voxcpm", "VoxCPM"),

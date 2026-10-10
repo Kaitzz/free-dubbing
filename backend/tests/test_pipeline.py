@@ -30,7 +30,6 @@ def _cached_session(tmp_path: Path) -> Path:
     for file in (
         "media/video_source.mp4",
         "media/audio_vocals.wav",
-        "media/audio_bgm.wav",
         "metadata/asr.json",
         "metadata/asr_fixed.json",
         "metadata/translation.zh.json",
@@ -135,11 +134,10 @@ def test_merge_video_stage_uses_translation_and_original_audio_for_subtitles(mon
     runner.artifacts.translation_file = translation
     received: dict[str, object] = {}
 
-    def fake_merge_video(video_file, dubbing_file, bgm_file, timings_file, session_dir, *, output_mode):
+    def fake_merge_video(video_file, dubbing_file, timings_file, session_dir, *, output_mode):
         received.update(
             video_file=video_file,
             dubbing_file=dubbing_file,
-            bgm_file=bgm_file,
             timings_file=timings_file,
             session_dir=session_dir,
             output_mode=output_mode,
@@ -155,7 +153,6 @@ def test_merge_video_stage_uses_translation_and_original_audio_for_subtitles(mon
     assert received == {
         "video_file": video,
         "dubbing_file": None,
-        "bgm_file": None,
         "timings_file": translation,
         "session_dir": session,
         "output_mode": "subtitles",
@@ -277,7 +274,6 @@ def test_pipeline_skips_already_succeeded_stages(monkeypatch, tmp_path):
         assert self.artifacts.session == session
         assert self.artifacts.video_file == session / "media" / "video_source.mp4"
         assert self.artifacts.vocals_file == session / "media" / "audio_vocals.wav"
-        assert self.artifacts.bgm_file == session / "media" / "audio_bgm.wav"
         assert self.artifacts.asr_file == session / "metadata" / "asr.json"
         self.artifacts.asr_fixed_file = session / "metadata" / "asr_fixed.json"
 
@@ -665,11 +661,8 @@ def test_pipeline_manual_pauses_after_each_stage(monkeypatch, tmp_path):
 
     def separate(self, task):
         vocals = self.artifacts.session / "media" / "audio_vocals.wav"
-        bgm = self.artifacts.session / "media" / "audio_bgm.wav"
         vocals.write_bytes(b"v")
-        bgm.write_bytes(b"b")
         self.artifacts.vocals_file = vocals
-        self.artifacts.bgm_file = bgm
 
     monkeypatch.setattr(PipelineRunner, "_separate", separate)
     database.queue_task_for_continue(task_id)
@@ -700,7 +693,6 @@ def test_pipeline_manual_completes_immediately_after_final_stage(monkeypatch, tm
                 database.update_task(self.task_id, session_path=str(session), title="manual-final")
             elif stage_name == "separate":
                 self.artifacts.vocals_file = session / "media" / "audio_vocals.wav"
-                self.artifacts.bgm_file = session / "media" / "audio_bgm.wav"
             elif stage_name == "asr":
                 self.artifacts.asr_file = session / "metadata" / "asr.json"
             elif stage_name == "asr_fix":
@@ -835,9 +827,7 @@ def test_pipeline_uses_uploaded_srt_and_skips_model_stages(monkeypatch, tmp_path
 
     def separate(self, task):
         self.artifacts.vocals_file = session / "media" / "audio_vocals.wav"
-        self.artifacts.bgm_file = session / "media" / "audio_bgm.wav"
         self.artifacts.vocals_file.write_bytes(b"vocals")
-        self.artifacts.bgm_file.write_bytes(b"bgm")
 
     def split_audio(self, task):
         self.artifacts.vocals_dir = session / "segments" / "vocals"
@@ -991,3 +981,37 @@ def test_uploaded_subtitle_is_found_in_its_task_folder_after_the_session_moved(m
     runner = PipelineRunner(task_id)
     runner.artifacts.session = session
     assert runner._uploaded_subtitle_path({"url": url}) == subtitle
+
+
+def test_separate_uses_the_original_audio_as_the_voice_track(monkeypatch, tmp_path):
+    import numpy as np
+    import soundfile as sf
+    from backend.app.adapters import source_audio
+
+    configure_db(monkeypatch, tmp_path)
+    url = "https://www.youtube.com/watch?v=abcdefghijk"
+    task_id = database.create_task(url)
+    session = tmp_path / "session"
+    (session / "media").mkdir(parents=True)
+    video = session / "media" / "video_source.mp4"
+    video.write_bytes(b"video")
+
+    def extract_audio(video_file, session_dir):
+        assert (video_file, session_dir) == (video, session)
+        output = session_dir / "media" / "audio_vocals.wav"
+        sf.write(output, np.zeros(88200, dtype=np.float32), 44100)
+        return output
+
+    monkeypatch.setattr(source_audio, "extract_audio", extract_audio)
+    runner = PipelineRunner(task_id)
+    runner.artifacts.session = session
+    runner.artifacts.video_file = video
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(runner, "stage_message", lambda stage, message: messages.append((stage, message)))
+
+    runner._separate(database.get_task(task_id))
+
+    assert runner.artifacts.vocals_file == session / "media" / "audio_vocals.wav"
+    assert messages == [("separate", "Original audio (2.0 s) -> audio_vocals.wav; no vocal separation")]
+    # No background track is produced or required to resume.
+    assert pipeline.stage_artifacts("separate", session, url) == {"vocals_file": session / "media" / "audio_vocals.wav"}

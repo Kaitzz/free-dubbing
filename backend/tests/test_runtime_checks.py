@@ -67,16 +67,8 @@ def test_validate_runtime_device_rejects_missing_cuda_index(monkeypatch):
         runtime_checks.validate_runtime_device()
 
 
-def test_validate_runtime_device_accepts_mps_for_demucs_and_cpu_for_whisper(monkeypatch):
+def test_validate_runtime_device_accepts_mps_because_sensevoice_falls_back_to_cpu(monkeypatch):
     monkeypatch.setattr(devices, "default_device", lambda: "mps")
     monkeypatch.setattr(devices, "_load_torch", lambda: fake_torch(False, mps_available=True))
 
     runtime_checks.validate_runtime_device()
-
-
-def test_validate_runtime_device_rejects_unavailable_mps(monkeypatch):
-    monkeypatch.setattr(devices, "default_device", lambda: "mps")
-    monkeypatch.setattr(devices, "_load_torch", lambda: fake_torch(False, mps_available=False))
-
-    with pytest.raises(RuntimeError, match="MPS is not available"):
-        runtime_checks.validate_runtime_device()

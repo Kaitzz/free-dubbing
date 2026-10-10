@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
+import soundfile as sf
 
 from backend.app.adapters import ffmpeg
 
@@ -92,13 +95,12 @@ def test_merge_video_burns_portrait_subtitles(monkeypatch, tmp_path):
     final_video = ffmpeg.merge_video(
         tmp_path / "video.mp4",
         tmp_path / "dubbing.wav",
-        tmp_path / "bgm.wav",
         timings,
         session,
     )
 
     assert final_video == session / "media" / "video_final.mp4"
-    assert len(commands) == 3
+    assert len(commands) == 2
     final_command = commands[-1]
     filter_arg = final_command[final_command.index("-vf") + 1]
     assert filter_arg.startswith("subtitles=filename='metadata/subtitles.zh.srt'")
@@ -146,16 +148,11 @@ def test_merge_video_uses_absolute_media_paths_when_cwd_is_session(monkeypatch, 
     ffmpeg.merge_video(
         session / "media" / "video_source.mp4",
         session / "tmp" / "audio_dubbing.wav",
-        session / "media" / "audio_bgm.wav",
         timings,
         session,
     )
 
-    mix_command = commands[0]
     final_command = commands[-1]
-    assert Path(mix_command[mix_command.index("-i") + 1]).is_absolute()
-    assert Path(mix_command[mix_command.index("-i", mix_command.index("-i") + 1) + 1]).is_absolute()
-    assert Path(mix_command[-1]).is_absolute()
     assert Path(final_command[final_command.index("-i") + 1]).is_absolute()
     assert Path(final_command[final_command.index("-i", final_command.index("-i") + 1) + 1]).is_absolute()
     assert Path(final_command[-1]).is_absolute()
@@ -191,7 +188,6 @@ def test_merge_video_subtitles_transcodes_original_audio_to_aac(monkeypatch, tmp
     ffmpeg.merge_video(
         tmp_path / "video.mp4",
         None,
-        None,
         translation,
         session,
         output_mode="subtitles",
@@ -224,18 +220,46 @@ def test_merge_video_dubbing_omits_hard_subtitles(monkeypatch, tmp_path):
     ffmpeg.merge_video(
         tmp_path / "video.mp4",
         tmp_path / "dubbing.wav",
-        tmp_path / "bgm.wav",
         timings,
         session,
         output_mode="dubbing",
     )
 
-    assert len(commands) == 2
+    # One pass: the dub is the only audio, padded so the video is not cut at the last line.
+    assert len(commands) == 1
     final_command = commands[-1]
     assert "-vf" not in final_command
     assert not (metadata_dir / "subtitles.zh.srt").exists()
-    assert final_command[final_command.index("-c:a") + 1] == "copy"
+    assert final_command.count("-i") == 2
+    assert final_command[final_command.index("-map", final_command.index("-map") + 1) + 1] == "1:a:0"
+    assert final_command[final_command.index("-af") + 1] == "apad"
+    assert final_command[final_command.index("-c:a") + 1] == "aac"
     assert "-shortest" in final_command
+    assert not (session / "tmp" / "audio_mixed.m4a").exists()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="needs ffmpeg")
+def test_merge_video_keeps_the_whole_video_when_the_dub_ends_early(monkeypatch, tmp_path):
+    monkeypatch.delenv("DUBBING_VIDEO_ENCODER", raising=False)
+    session = tmp_path / "session"
+    (session / "metadata").mkdir(parents=True)
+    timings = session / "metadata" / "timings.json"
+    timings.write_text('{"translation": []}', encoding="utf-8")
+    video = tmp_path / "video.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "color=c=black:s=64x64:r=10:d=3",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                    "-c:v", "mpeg4", "-c:a", "aac", "-shortest", str(video)], check=True)
+    dub = tmp_path / "audio_dubbing.wav"
+    sf.write(dub, np.full(16000, 0.1, dtype=np.float32), 16000)
+
+    final = ffmpeg.merge_video(video, dub, timings, session, output_mode="dubbing")
+
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration",
+                            "-of", "json", str(final)], capture_output=True, text=True, check=True)
+    durations = {s["codec_type"]: float(s["duration"]) for s in json.loads(probe.stdout)["streams"]}
+    assert durations["video"] == pytest.approx(3, abs=0.2)
+    assert durations["audio"] == pytest.approx(3, abs=0.2)
 
 
 def test_merge_video_replaces_corrupt_final_with_fresh_ffmpeg_output(monkeypatch, tmp_path):
@@ -261,7 +285,6 @@ def test_merge_video_replaces_corrupt_final_with_fresh_ffmpeg_output(monkeypatch
 
     result = ffmpeg.merge_video(
         tmp_path / "video.mp4",
-        None,
         None,
         translation,
         session,
@@ -300,7 +323,6 @@ def test_merge_video_failure_cleans_temporary_output_and_preserves_visible_failu
         ffmpeg.merge_video(
             tmp_path / "video.mp4",
             None,
-            None,
             translation,
             session,
             output_mode="subtitles",
@@ -310,11 +332,15 @@ def test_merge_video_failure_cleans_temporary_output_and_preserves_visible_failu
     assert list(media_dir.glob(".video_final.*.mp4")) == []
 
 
+def test_merge_video_requires_dubbing_audio_for_dubbing_modes(tmp_path):
+    with pytest.raises(ValueError, match="Dubbing audio is required"):
+        ffmpeg.merge_video(tmp_path / "video.mp4", None, tmp_path / "timings.json", tmp_path / "session")
+
+
 def test_merge_video_rejects_unknown_output_mode(tmp_path):
     with pytest.raises(ValueError, match="output_mode must be one of"):
         ffmpeg.merge_video(
             tmp_path / "video.mp4",
-            None,
             None,
             tmp_path / "timings.json",
             tmp_path / "session",
@@ -414,7 +440,7 @@ def test_auto_encoder_probes_hardware_and_falls_back(monkeypatch, result):
         assert "veryfast" in args
 
 
-def test_nvenc_failure_retries_cpu_and_copies_mixed_audio(monkeypatch, tmp_path):
+def test_nvenc_failure_retries_cpu_and_keeps_the_padded_dub(monkeypatch, tmp_path):
     session = tmp_path / "session"
     (session / "metadata").mkdir(parents=True)
     timings = session / "metadata/timings.json"
@@ -428,10 +454,10 @@ def test_nvenc_failure_retries_cpu_and_copies_mixed_audio(monkeypatch, tmp_path)
             raise subprocess.CalledProcessError(1, cmd)
         return subprocess.CompletedProcess(cmd, 0)
     monkeypatch.setattr(ffmpeg.subprocess, "run", run)
-    result = ffmpeg.merge_video(tmp_path/"v.mp4", tmp_path/"d.wav", tmp_path/"b.wav",
-                                timings, session, output_mode="dubbing")
-    assert len(commands) == 3
+    result = ffmpeg.merge_video(tmp_path/"v.mp4", tmp_path/"d.wav", timings, session, output_mode="dubbing")
+    assert len(commands) == 2
     assert result.read_bytes() == b"complete"
-    assert "h264_nvenc" in commands[1]
-    assert "libx264" in commands[2]
-    assert commands[2][commands[2].index("-c:a") + 1] == "copy"
+    assert "h264_nvenc" in commands[0]
+    assert "libx264" in commands[1]
+    assert commands[1][commands[1].index("-af") + 1] == "apad"
+    assert commands[1][commands[1].index("-c:a") + 1] == "aac"

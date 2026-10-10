@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-YouDub WebUI is a video localization pipeline: download, vocal separation, ASR, LLM translation, TTS dubbing, then mixing and subtitle burn-in. It has a FastAPI backend and a Next.js GUI. This repo (`origin` = `github.com/Kaitzz/free-dubbing`) is a fork of `liuzhao1225/YouDub-webui` that adds a **Colab remote-execution mode**. In that mode the local Windows machine (no GPU) runs the GUI plus a coordinator, and a Google Colab GPU notebook pulls work one stage at a time over a Cloudflare tunnel. This is how the project is used day to day. The upstream mode, where everything runs on one GPU machine, still exists and shares the same pipeline code.
+YouDub WebUI is a video localization pipeline: download, audio extraction, ASR, LLM translation, TTS dubbing, then muxing and subtitle burn-in. It has a FastAPI backend and a Next.js GUI. This repo (`origin` = `github.com/Kaitzz/free-dubbing`) is a fork of `liuzhao1225/YouDub-webui` that adds a **Colab remote-execution mode**. In that mode the local Windows machine (no GPU) runs the GUI plus a coordinator, and a Google Colab GPU notebook pulls work one stage at a time over a Cloudflare tunnel. This is how the project is used day to day. The upstream mode, where everything runs on one GPU machine, still exists and shares the same pipeline code.
 
 The docs are in Chinese and partly out of date. When docs and code disagree, trust the code:
 - `COLAB_GUI.md`: the current GUI + Colab workflow (most relevant).
@@ -16,7 +16,7 @@ Code, comments and commit messages are in English. Commit subjects are short imp
 
 ## Commands
 
-The local machine runs Windows with no GPU and no full ML environment. torch, funasr, demucs and voxcpm are not installed, and the README's `.venv` does not exist. Real inference only runs on Colab. The local virtualenvs are:
+The local machine runs Windows with no GPU and no full ML environment. torch, funasr and voxcpm are not installed, and the README's `.venv` does not exist. Real inference only runs on Colab. The local virtualenvs are:
 - `.venv-test`: lightweight test deps from `backend/requirements-test.txt`. Use it for pytest.
 - `.venv-gui`: the coordinator runtime from `requirements-gui.txt`, created by `scripts/start_colab_gui.ps1`.
 
@@ -61,7 +61,7 @@ The private launcher notebook is `data/gui/Dubbing_Launcher.ipynb`. It is gitign
 1. The launcher resolves `main` of `Kaitzz/free-dubbing` to a commit SHA.
 2. It executes the code cells of `notebooks/YouDub_GUI_Colab.ipynb` from that SHA.
 3. That working notebook checks out the same SHA to `/content/free-dubbing/<sha>/`.
-4. It builds a per-commit `.venv-colab` by installing `requirements-colab.txt` against Colab's preinstalled torch, and fetches the pinned Demucs commit.
+4. It builds a per-commit `.venv-colab` by installing `requirements-colab.txt` against Colab's preinstalled torch.
 5. It runs `scripts/colab_preflight.py`.
 6. It mounts the Colab account's Google Drive. The user authorizes a popup once per runtime; if the mount fails, the worker runs without checkpoints.
 7. It starts `scripts/colab_worker.py` with `DUBBING_DRIVE_DIR` and `DUBBING_WORKSPACE` set.
@@ -71,9 +71,8 @@ Colab Secrets (`MINIMAX_API_KEY`, plus the optional `YOUTUBE_COOKIES` and `HF_TO
 What follows from this:
 - **Worker-side changes need a push.** Changes to `backend/app/**`, `scripts/colab_worker.py`, `scripts/remote_job.py`, `notebooks/YouDub_GUI_Colab.ipynb` or `requirements-colab.txt` reach Colab only after pushing to `origin/main` and re-running the launcher. Every new SHA gets a fresh checkout and a fresh pip install, which takes minutes. A running worker is never hot-updated.
 - **Coordinator-side changes need a restart.** Changes to `main.py`, `remote.py` and the rest of the local side take effect after restarting `start_colab_gui.ps1`. uvicorn runs without `--reload`, so a stale process keeps serving old code; to confirm which code is live, compare the uvicorn process start time with the commit time. The two sides can run different commits, and `remote.TRANSFER_VERSION` / `colab_worker.TRANSFER_VERSION` must match. A mismatch is rejected rather than downgraded: an old worker's claim gets 426, and a new worker that sees an old coordinator (`/hello` returns 404) keeps retrying every 30 s and tells the user to restart the local services. Bump the version on any incompatible protocol change, and change both sides together.
-- **The Colab worker ignores the local `.env`.** Its environment is hardcoded in `colab_worker.run_job`: `DEVICE=cuda`, `DEMUCS_CHUNK_SECONDS=180`, `DUBBING_VIDEO_ENCODER=auto`, VoxCPM low-memory init with no compile, and so on. The GUI's translation base URL, model and concurrency are passed along. The API key comes from the Colab Secret `MINIMAX_API_KEY` and is never sent from the local machine.
+- **The Colab worker ignores the local `.env`.** Its environment is hardcoded in `colab_worker.run_job`: `DEVICE=cuda`, `DUBBING_VIDEO_ENCODER=auto`, VoxCPM low-memory init with no compile, and so on. The GUI's translation base URL, model and concurrency are passed along. The API key comes from the Colab Secret `MINIMAX_API_KEY` and is never sent from the local machine.
 - **Colab installs can drift.** Requirements are mostly unpinned, and yt-dlp is always upgraded, so a fresh runtime can pick up new library versions. If Colab's torch version is missing from the notebook's `codec_versions` map (for TorchCodec), the install fails immediately.
-- **The Demucs pin lives in two places:** the `submodule/demucs` pointer and the notebook. Bump both together. The submodule is not initialized locally; tests don't need it.
 - **Notebooks are tested.** `backend/tests/test_dubbing_launcher.py` requires every notebook code cell to compile and to be saved without outputs.
 
 ## Architecture
@@ -89,19 +88,21 @@ What follows from this:
   - On an exception, the current stage and the task are marked failed. `/resume` resets failed and running stages to pending.
 - **Shortcuts that skip models.** An uploaded translated SRT (local uploads only) replaces both ASR and translation (`adapters/local_subtitles.py`). YouTube captions fetched during download (`adapters/online_assets.py`, saved to `metadata/source_subtitles.json`) replace SenseVoice. Automatic captions are regrouped in `asr_fix` (`adapters/source_caption_segments.py`).
 - **Only speech is dubbed.** The product assumes videos without background music, and short sound effects may be lost.
+  - There is no vocal separation. The `separate` stage keeps its name but only extracts the original audio (`adapters/source_audio.py`) to `media/audio_vocals.wav`, the voice track for SenseVoice, segment splitting and TTS references. Demucs and its submodule were removed.
+  - The final video carries only the dub: `ffmpeg.merge_video` pads it with `apad` and `-shortest` ends the output with the video. There is no background track or mix. Older sessions may still hold `media/audio_bgm.wav` and `tmp/audio_mixed.m4a`; nothing reads them, and redo still removes them.
   - Caption annotations are stripped as captions are parsed (`online_assets._spoken`, also used for auto-caption word fragments): sound cues like `[Music]` and `(gentle music)`, speaker labels, `♪` lyrics, `>>` markers and dialogue dashes. They never become cues and never split a sentence.
   - `translate_asr` drops every segment the translator marks `audio_mode: original` (sound cues, laughter, fillers), so such segments get no subtitle, no dub and no spliced-in original audio.
   - The original-audio paths in TTS and `merge_tts_audio` remain only for translation files written before this change.
 - **Sources and task ids.** `sources.detect_source(url)` maps a task URL to a source and language pair: YouTube en→zh, Bilibili zh→en, and `local://upload/<task_id>?direction=en-zh|ja-zh|zh-en`. URL tasks use the video id as the task id, with `-<output_mode>` appended unless the mode is `both`. Resubmitting a URL therefore returns the existing task.
 - **Adapters** live in `backend/app/adapters/`:
   - `ytdlp` and `local_video`: input.
-  - `demucs`: the vendored `submodule/demucs` source, model `htdemucs_ft`, processed in chunks with crossfades.
+  - `source_audio`: the `separate` stage. It decodes the first audio stream to 44.1 kHz stereo PCM16, the format Demucs used to write.
   - `sensevoice_asr`: FunASR VAD plus CTC word timestamps. `whisper_asr` is legacy and unused.
   - `asr_sentence_fixer`: sentence segmentation.
   - `openai_translate`: any OpenAI-compatible chat API, MiniMax-M3 by default. It runs a preprocess pass, then sends ID-keyed JSON batches that are validated, retried, and split in half on failure. Each item carries an `audio_mode` that decides between dubbing and keeping the original audio (see `audio_mode.py`).
   - `voxcpm` or `minimax_tts`, selected by `DUBBING_TTS_PROVIDER`.
   - `audio`: splits segments, time-stretches them and assembles the dubbing track.
-  - `ffmpeg`: audio mix, SRT, subtitle burn-in, and an NVENC probe with a libx264 fallback.
+  - `ffmpeg`: the final mux with the dub as the only audio, SRT, subtitle burn-in, and an NVENC probe with a libx264 fallback.
 - **Model lifetime.** Models are module-level singletons. `gpu_memory.release_stage_memory` releases them after GPU stages.
 
 ### Session directory
@@ -109,10 +110,10 @@ What follows from this:
 The session directory is the contract between stages, resume, redo and the Colab transfer.
 
 URL tasks use `<WORKFOLDER>/<uploader>/<title>__<id>/`. Local uploads use `<WORKFOLDER>/local/<title>__<id>/`, and the original upload files stay in `<WORKFOLDER>/_uploads/<task_id>/{video,subtitle}/`. Inside a session:
-- `media/`: `video_source.mp4`, `audio_vocals.wav`, `audio_bgm.wav`, `thumbnail.*`, `video_final.mp4`
+- `media/`: `video_source.mp4`, `audio_vocals.wav` (the original audio), `thumbnail.*`, `video_final.mp4`
 - `metadata/`: `ytdlp_info.json` or `local_info.json`, `raw_subtitles/`, `source_subtitles.{json,srt}`, `asr.json`, `asr_fixed.json`, `translation_preprocess.json`, `translation.<lang>.json`, `timings.json`, `subtitles.<lang>.srt`
 - `segments/`: `vocals/NNNN.wav`, `tts/NNNN.wav`, `stretched/`
-- `tmp/`: `audio_dubbing.wav`, `audio_mixed.m4a`, `tts_references/`
+- `tmp/`: `audio_dubbing.wav`, `tts_references/`
 
 If you add or rename a stage artifact, update two places:
 - `pipeline._STAGE_ARTIFACTS`, which drives resume and the Colab worker's "re-run what's missing" check;
@@ -184,7 +185,7 @@ Next.js App Router pages: `/` (submit a task, task history) and `/tasks/[id]` (s
 
 - **Task log.** `data/logs/<task_id>.log` is written by `PipelineRunner.log` and `stage_message` as `[UTC ISO timestamp, 1-second precision] [stage] msg`, plus Colab lines relayed by `/heartbeat`. `GET /api/tasks/{id}/log` returns the whole file. The task page re-fetches it every 2 s and rewrites the leading timestamps to Pacific time (`apps/web/src/lib/log-time.ts`).
 - **Stage durations.** These exist only as `task_stages.started_at` and `completed_at`, at 1-second precision. In colab mode they come from the Colab clock in the job database and exclude transfer and restore time.
-- **Adapter output.** Adapters `print()` to stdout (`[download]`, `[tts]`, `[translate]`, `[merge_video]`). `openai_translate` uses `logging`, but nothing configures logging, so its INFO lines are dropped and WARNING and above go to stderr unformatted. FFmpeg and yt-dlp stderr is not captured into exceptions or the task log.
+- **Adapter output.** Adapters `print()` to stdout (`[download]`, `[tts]`, `[translate]`, `[merge_video]`). `openai_translate` uses `logging`, but nothing configures logging, so its INFO lines are dropped and WARNING and above go to stderr unformatted. FFmpeg and yt-dlp stderr is not captured into exceptions or the task log, except by audio extraction, which puts the last FFmpeg error lines in its exception.
   - In local mode, stdout lands in the uvicorn console. That is `data/gui/backend.log`, which has no timestamps and is mostly access-log lines from GUI polling.
   - In colab mode, the subprocess output goes to `<workspace>/tasks/<task>/leases/<lease>/worker.log` on Colab disk, which disappears with the runtime. Only lines that pass `colab_worker.console_line()` are relayed to the GUI.
 - **Relayed Colab lines** are written as `[<Colab UTC time>] [Colab] …`, one timestamp per line, with re-sent batches dropped. Each stage's fresh runner still re-logs `Task started`, `Device plan` and `Reused cached output` for every earlier stage.
@@ -201,7 +202,7 @@ The user's main complaints are slowness, crashes, logs and timings that can't be
 **Baseline before the per-stage transfer (2026-10-09).** Task `hqMh33ft1Pw` was a 10.8-minute video on a T4 that took 42.3 minutes end to end. The breakdown was reconstructed from lease archive timestamps and stage times.
 - **Stage compute: 22.6 minutes.**
   - TTS: 14.7 minutes for 288 clips, about 3 s per clip, sequential VoxCPM with `VOXCPM_OPTIMIZE=false`.
-  - Demucs: 2.7 minutes. Translation: 2.2 minutes.
+  - Demucs: 2.7 minutes (separation has since been removed). Translation: 2.2 minutes.
   - `merge_video`: 2.5 minutes. It used CPU libx264, because the NVENC probe failed on Colab.
 - **Overhead between stages: 18.6 minutes.**
   - The coordinator was running pre-incremental code and never restarted, so every stage zipped the whole session and sent it both ways.

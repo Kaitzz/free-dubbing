@@ -50,21 +50,21 @@ def test_auto_prefers_cuda(monkeypatch):
     monkeypatch.setattr(devices, "default_device", lambda: "auto")
     monkeypatch.setattr(devices, "_load_torch", lambda: fake_torch(cuda_available=True, mps_available=True))
 
-    assert devices.resolve_device("demucs").selected == "cuda"
+    assert devices.resolve_device("funasr").selected == "cuda"
 
 
 def test_auto_uses_mps_when_cuda_is_unavailable(monkeypatch):
     monkeypatch.setattr(devices, "default_device", lambda: "auto")
     monkeypatch.setattr(devices, "_load_torch", lambda: fake_torch(cuda_available=False, mps_available=True))
 
-    assert devices.resolve_device("demucs").selected == "mps"
+    assert devices._auto_device() == "mps"
 
 
 def test_auto_falls_back_to_cpu(monkeypatch):
     monkeypatch.setattr(devices, "default_device", lambda: "auto")
     monkeypatch.setattr(devices, "_load_torch", lambda: fake_torch(cuda_available=False, mps_available=False))
 
-    assert devices.resolve_device("demucs").selected == "cpu"
+    assert devices.resolve_device("funasr").selected == "cpu"
 
 
 def test_whisper_uses_cpu_when_configured_device_is_mps(monkeypatch):
@@ -90,11 +90,11 @@ def test_whisper_keeps_cuda_device(monkeypatch):
 
 def test_component_override_takes_precedence(monkeypatch):
     monkeypatch.setattr(devices, "default_device", lambda: "cuda")
-    monkeypatch.setenv("DEMUCS_DEVICE", "cpu")
+    monkeypatch.setenv("FUNASR_DEVICE", "cpu")
 
-    resolution = devices.resolve_device("demucs")
+    resolution = devices.resolve_device("funasr")
     assert resolution.selected == "cpu"
-    assert resolution.setting_name == "DEMUCS_DEVICE"
+    assert resolution.setting_name == "FUNASR_DEVICE"
 
 
 def test_voxcpm_is_reported_as_unmanaged(monkeypatch):

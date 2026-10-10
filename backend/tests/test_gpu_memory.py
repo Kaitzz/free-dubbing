@@ -148,7 +148,8 @@ def test_stage_release_records_each_cuda_device_including_cuda_one(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setattr(gpu_memory.gc, "collect", lambda: calls.append("gc.collect") or 0)
 
-    report = gpu_memory.release_stage_memory("separate")
+    monkeypatch.delitem(sys.modules, "backend.app.adapters.sensevoice_asr", raising=False)
+    report = gpu_memory.release_stage_memory("asr")
 
     assert report is not None
     assert report.devices[1] == gpu_memory.DeviceMemory(
@@ -178,7 +179,8 @@ def test_torch_cache_release_does_not_import_torch_when_unloaded(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", reject_torch_import)
     monkeypatch.setattr(gpu_memory.gc, "collect", lambda: calls.append("gc.collect") or 3)
 
-    report = gpu_memory.release_stage_memory("separate")
+    monkeypatch.delitem(sys.modules, "backend.app.adapters.sensevoice_asr", raising=False)
+    report = gpu_memory.release_stage_memory("asr")
 
     assert report is not None
     assert report.torch_loaded is False
@@ -193,7 +195,8 @@ def test_unavailable_cuda_and_mps_skip_backend_calls(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setattr(gpu_memory.gc, "collect", lambda: calls.append("gc.collect") or 0)
 
-    report = gpu_memory.release_stage_memory("separate")
+    monkeypatch.delitem(sys.modules, "backend.app.adapters.sensevoice_asr", raising=False)
+    report = gpu_memory.release_stage_memory("asr")
 
     assert report is not None
     assert calls == ["gc.collect"]
@@ -235,6 +238,13 @@ def test_release_failures_are_aggregated_and_raised(monkeypatch):
         "cuda.memory_allocated:0",
         "cuda.memory_reserved:0",
     ]
+
+
+def test_stages_without_models_skip_release(monkeypatch):
+    monkeypatch.delenv("RELEASE_GPU_MEMORY_AFTER_STAGE", raising=False)
+
+    assert gpu_memory.release_stage_memory("separate") is None
+    assert gpu_memory.release_stage_memory("merge_video") is None
 
 
 def test_disabled_release_skips_stage_and_task_cleanup(monkeypatch):

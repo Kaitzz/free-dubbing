@@ -8,15 +8,15 @@
 
 1. 上传 `notebooks/YouDub_Pipeline_Colab.ipynb` 至 Colab，选择 GPU。
 2. 第一个代码单元上传 **youdub-pipeline-colab.zip**（不是旧 STT 包）。
-3. 安装单元建立专用 venv、保留 Colab CUDA torch/torchaudio，安装 FFmpeg、中文字体、固定版本 Demucs 源码。
+3. 安装单元建立专用 venv、保留 Colab CUDA torch/torchaudio，安装 FFmpeg 和中文字体。
 4. 预检单元检查模型库导入、GPU、音频解码、字幕滤镜和字体，不下载模型权重。
 5. 密钥单元读取 Colab Secrets 的 `MINIMAX_API_KEY`；没有时用隐藏输入框。地址为 `https://api.minimaxi.com/v1`，模型 `MiniMax-M3`。不上传本机 .env，不在 notebook 文本写密钥。
 6. 上传短视频（先用 30–90 秒测试），默认 `en-zh`、`both`（中文配音和硬字幕）；也支持 `ja-zh`、`zh-en`。
 7. 执行处理单元，实时显示阶段日志；完成后下载结果 ZIP，含最终 MP4、ASR、译文、配音时间轴和 SRT。
 
-GPU：Demucs 人声分离 → SenseVoiceSmall STT → VoxCPM2 配音；阶段串行并释放模型。
+GPU：SenseVoiceSmall STT → VoxCPM2 配音；阶段串行并释放模型。不做人声分离，直接用原视频音轨，成品只有配音。
 翻译：批量调用 MiniMax-M3，字幕文本会发送到配置的 MiniMax 服务。
-音频混合、视频编码和字幕烧录：Colab CPU / FFmpeg。本机只操作浏览器和下载文件。
+音轨提取、视频编码和字幕烧录：Colab CPU / FFmpeg。本机只操作浏览器和下载文件。
 
 ## 重试与边界
 

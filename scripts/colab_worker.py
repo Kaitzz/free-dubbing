@@ -495,7 +495,7 @@ def run_job(client, job):
         env=os.environ.copy()
         env.update(YOUDUB_DATA_DIR=str(lease_dir/'data'),WORKFOLDER=str(workspace.work),
             YOUDUB_EXECUTION_BACKEND='local',MODEL_CACHE_DIR=model_cache_path(),
-            DEVICE='cuda',FUNASR_DEVICE='cuda:0',DEMUCS_DEVICE='cuda',DEMUCS_CHUNK_SECONDS=os.getenv('DEMUCS_CHUNK_SECONDS','180'),
+            DEVICE='cuda',FUNASR_DEVICE='cuda:0',
             DUBBING_VIDEO_ENCODER=os.getenv('DUBBING_VIDEO_ENCODER','auto'),
             DUBBING_TTS_PROVIDER=os.getenv('DUBBING_TTS_PROVIDER','voxcpm'),
             MINIMAX_TTS_MODEL=os.getenv('MINIMAX_TTS_MODEL','speech-2.8-turbo'),

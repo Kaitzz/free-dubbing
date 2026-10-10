@@ -11,7 +11,7 @@ class StageSpec:
 
 STAGES: tuple[StageSpec, ...] = (
     StageSpec("download", "Download"),
-    StageSpec("separate", "Demucs"),
+    StageSpec("separate", "Extract audio"),
     StageSpec("asr", "SenseVoice"),
     StageSpec("asr_fix", "Split sentences"),
     StageSpec("translate", "Translate"),

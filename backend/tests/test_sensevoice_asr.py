@@ -111,7 +111,7 @@ def test_funasr_device_override_is_used(monkeypatch):
     monkeypatch.setattr(devices, "default_device", lambda: "cuda")
     resolved = devices.resolve_device("funasr")
     assert resolved.selected == "cpu" and resolved.setting_name == "FUNASR_DEVICE"
-    assert devices.MANAGED_COMPONENTS == ("demucs", "funasr")
+    assert devices.MANAGED_COMPONENTS == ("funasr",)
 
 
 def test_cli_exports_srt_from_aligned_json(tmp_path, monkeypatch):
