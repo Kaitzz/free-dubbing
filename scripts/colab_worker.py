@@ -96,7 +96,7 @@ def export_transcript(session):
     if source is None:
         return
     try:
-        from backend.app.adapters.ffmpeg import _srt_time
+        from backend.app.adapters.subtitles import _srt_time
         rows = json.loads(source.read_text(encoding="utf-8"))["result"]["utterances"]
         text = "\n".join(row["text"] for row in rows) + "\n"
         srt = "\n\n".join(f"{index}\n{_srt_time(int(row['start_time']))} --> {_srt_time(int(row['end_time']))}\n{row['text']}"

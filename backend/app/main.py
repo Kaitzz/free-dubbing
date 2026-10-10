@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import time
 import uuid
@@ -529,7 +530,8 @@ def task_detail(task_id: str) -> dict:
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
     return {**task, "source_assets": {key: _source_asset(task, key) is not None
-                                    for key in ("thumbnail", "source-subtitles")}}
+                                    for key in ("thumbnail", "source-subtitles")},
+            "subtitles": _subtitle_languages(task)}
 
 
 def _is_inside_workfolder(path: Path) -> bool:
@@ -691,6 +693,45 @@ def _source_asset(task: dict, name: str) -> Path | None:
         if _is_inside_workfolder(path) and not path.is_symlink() and path.is_file():
             return path
     return None
+
+
+def _subtitle_file(task: dict, language: str) -> Path | None:
+    if not task.get("session_path") or not re.fullmatch(r"[a-z]{2,3}", language):
+        return None
+    path = Path(task["session_path"]) / "metadata" / f"subtitles.{language}.srt"
+    if _is_inside_workfolder(path) and not path.is_symlink() and path.is_file():
+        return path
+    return None
+
+
+def _subtitle_languages(task: dict) -> list[str]:
+    """Languages with a subtitle file, the translation first."""
+    if not task.get("session_path"):
+        return []
+    metadata = Path(task["session_path"]) / "metadata"
+    languages = [path.name.split(".")[1] for path in metadata.glob("subtitles.*.srt")]
+    try:
+        target = detect_source(task["url"]).target_language
+    except ValueError:
+        target = ""
+    return sorted((language for language in languages if _subtitle_file(task, language)),
+                  key=lambda language: (language != target, language))
+
+
+@app.get("/api/tasks/{task_id}/subtitles/{language}")
+def subtitle_file(task_id: str, language: str, download: bool = False) -> FileResponse:
+    task = database.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    path = _subtitle_file(task, language)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Subtitles are not available.")
+    filename = None
+    if download:
+        from .video_export import export_info, _clean
+        info = export_info(task)
+        filename = f"{_clean(info['title'], 100)} [{_clean(info['source_video_id'], 40)}] - subtitles.{language}.srt"
+    return FileResponse(path, media_type="application/x-subrip", filename=filename)
 
 
 @app.get("/api/tasks/{task_id}/source-asset/{name}")

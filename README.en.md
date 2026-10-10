@@ -14,7 +14,7 @@ China mirror on AtomGit: [YouDub-webui](https://atomgit.com/liuzhao1225/YouDub-w
 
 An open-source video localization tool proven in a real creator workflow.
 
-YouDub WebUI turns a YouTube, Bilibili, or local video into a target-language version. It imports, transcribes, and translates the source, then produces hard subtitles with the original audio, dubbing without hard subtitles, or both together. Dubbing modes generate voiceover using the original audio track as the voice reference. The final video keeps only the dub, without the source's background music or sound effects, and can be played or downloaded from the web UI.
+YouDub WebUI turns a YouTube, Bilibili, or local video into a target-language version. It imports, transcribes, and translates the source, then keeps the original audio or replaces it with a dub. Both come with downloadable SRT files, one for the translation and one for the original text, on the same timeline; nothing is burned into the picture. Dubbing modes generate voiceover using the original audio track as the voice reference. The final video keeps only the dub, without the source's background music or sound effects, and can be played or downloaded from the web UI.
 
 The most mature path is **YouTube English -> Chinese dubbing**. The app also supports **Bilibili Chinese -> English dubbing** and includes **local-video Japanese -> Chinese dubbing** in the same task pipeline. The Japanese path has automated parameter-flow and regression coverage, but has not yet completed model-quality acceptance with real Japanese media.
 
@@ -340,7 +340,7 @@ On Windows, `chmod` and `umask` are not substitutes for NTFS ACLs. Restrict the 
 6. Click `Get models` to fetch model IDs, or enter a model manually.
 7. Tune `Translate concurrency` based on your API provider's rate limits.
 8. Return to the home page and submit a YouTube URL, Bilibili URL, or local video.
-   - Under `Output content`, choose `Hard subtitles (original audio)`, `Dubbing (no hard subtitles)`, or `Hard subtitles and dubbing`.
+   - Under `Output content`, choose `Original audio + subtitle files` or `Dubbing + subtitle files`.
    - Local videos can include an already translated `.srt` file. When provided, YouDub skips SenseVoice and OpenAI translation, then uses that file according to the selected output content.
    - Local videos support `English -> Chinese`, `Japanese -> Chinese`, and `Chinese -> English`. The direction also determines the optional subtitle's target language; for example, `Japanese -> Chinese` treats the uploaded SRT as Chinese subtitles.
 9. Open the task detail page to watch stage progress, logs, and the final video.
@@ -368,10 +368,9 @@ YouTube / Bilibili URL
   -> Sentence and timing normalization
   -> OpenAI-compatible API preprocesses the full transcript and translates sentences in parallel
   -> Branch by output content:
-     - subtitles: preserve original audio and burn hard subtitles
-     - dubbing: generate target-language dubbing that replaces the original audio, without hard subtitles
-     - both: generate dubbing that replaces the original audio, then burn hard subtitles
-  -> FFmpeg renders the final mp4
+     - subtitles: preserve the original audio
+     - dubbing / both: generate target-language dubbing that replaces the original audio
+  -> Write translation and original-text SRT files on one timeline; FFmpeg muxes the final mp4 (H.264 is copied)
 ```
 
 Local video uploads use the same later pipeline stages, supporting English or Japanese speech translated into Chinese and Chinese speech translated into English. The Japanese path passes `ja` to SenseVoice and uses a dedicated Japanese-to-Chinese prompt. If an already translated `.srt` file is uploaded with the video, YouDub converts the SRT into its internal timed translation format, skips SenseVoice and OpenAI translation, then continues according to the selected output content. In v1 this is limited to local video uploads with `.srt`; URL tasks cannot attach subtitle files.
@@ -380,7 +379,7 @@ Local video uploads use the same later pipeline stages, supporting English or Ja
 
 - **Real end-to-end workflow**: URL in, final video out. No manual audio slicing, subtitle editing, or video rendering steps.
 - **Two source paths**: YouTube English -> Chinese is the primary mature workflow; Bilibili Chinese -> English is wired into the same task pipeline.
-- **Three output modes**: Produce hard subtitles with original audio, dubbing without hard subtitles, or both together.
+- **Two output modes**: Keep the original audio or dub it; both include translation and original-text SRT files on the same timeline.
 - **Local-first storage**: SQLite state, cookies, logs, intermediate artifacts, and final videos stay on your machine.
 - **Observable task progress**: Task history, stage status, stage duration, logs, and errors are visible in the web UI.
 - **Resume after failure**: Failed tasks can resume from the failed stage, reusing cached outputs from stages that already succeeded.

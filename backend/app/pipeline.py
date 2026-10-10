@@ -600,25 +600,26 @@ class PipelineRunner:
 
     def _merge_video(self, task: dict) -> None:
         from .adapters.ffmpeg import merge_video
+        from .adapters.subtitles import write_subtitles
 
         session = _require(self.artifacts.session, "session")
         video_file = _require(self.artifacts.video_file, "video_file")
         output_mode = task.get("output_mode") or database.DEFAULT_OUTPUT_MODE
+        # Subtitles follow what is heard: the original timing, or the dub's adjusted timing.
         if output_mode == "subtitles":
             dubbing_file = None
-            subtitle_source = _require(self.artifacts.translation_file, "translation_file")
+            timeline = _require(self.artifacts.translation_file, "translation_file")
         else:
             dubbing_file = _require(self.artifacts.dubbing_file, "dubbing_file")
-            subtitle_source = _require(self.artifacts.timings_file, "timings_file")
-        self.artifacts.final_video = merge_video(
-            video_file,
-            dubbing_file,
-            subtitle_source,
-            session,
-            output_mode=output_mode,
-        )
+            timeline = _require(self.artifacts.timings_file, "timings_file")
+        subtitles = write_subtitles(timeline, session, detect_source(task["url"]).asr_language)
+        self.artifacts.final_video = merge_video(video_file, session, dubbing_file)
         size_mb = self.artifacts.final_video.stat().st_size / (1024 * 1024)
-        self.stage_message("merge_video", f"Final video: {self.artifacts.final_video} ({size_mb:.1f} MB)")
+        names = ", ".join(path.name for path in subtitles)
+        self.stage_message(
+            "merge_video",
+            f"Final video: {self.artifacts.final_video} ({size_mb:.1f} MB); subtitles: {names}",
+        )
 
 
 def run_task(task_id: str) -> None:

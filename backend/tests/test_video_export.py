@@ -17,7 +17,7 @@ def task(tmp_path):
 def test_named_export_is_safe_and_omits_transport_secrets(tmp_path):
     info=export_info(task(tmp_path))
     assert "Creator" in info["filename"] and "abcdefghijk" in info["filename"]
-    assert "中文配音+字幕" in info["filename"]
+    assert "[中文配音]" in info["filename"]
     assert "/" not in info["filename"] and "?" not in info["filename"]
     assert "private" not in json.dumps(info)
     assert info["audio_language"]=="zh"
@@ -26,7 +26,9 @@ def test_named_export_is_safe_and_omits_transport_secrets(tmp_path):
 
 def test_subtitle_only_keeps_original_audio_language(tmp_path):
     t=task(tmp_path);t["output_mode"]="subtitles"
-    assert export_info(t)["audio_language"]=="en"
+    info=export_info(t)
+    assert info["audio_language"]=="en"
+    assert "[英文原音]" in info["filename"]
 
 
 def test_export_caches_and_invalidates_on_source_change(tmp_path,monkeypatch):

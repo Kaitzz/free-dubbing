@@ -29,6 +29,7 @@ import {
   redoStage,
   rerunTask,
   resumeTask,
+  subtitleDownloadUrl,
 } from "@/lib/api"
 import { useI18n } from "@/lib/i18n"
 import { pacificLog } from "@/lib/log-time"
@@ -279,11 +280,7 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
                 </dd>
                 <dt className="text-muted-foreground">{t.task.outputMode}</dt>
                 <dd>
-                  {(task.output_mode || "both") === "subtitles"
-                    ? t.task.outputSubtitles
-                    : (task.output_mode || "both") === "dubbing"
-                      ? t.task.outputDubbing
-                      : t.task.outputBoth}
+                  {task.output_mode === "subtitles" ? t.task.outputSubtitles : t.task.outputBoth}
                 </dd>
                 {task.session_path ? (
                   <>
@@ -340,6 +337,16 @@ export default function TaskDetailPage({ params }: { params: Promise<{ id: strin
               <Button variant="outline" nativeButton={false} render={<a href={`/api/tasks/${task.id}/artifact/video-metadata`} />}>
                 {t.task.metadataDownload}
               </Button>
+              {task.subtitles?.length ? (
+                <div className="flex flex-wrap gap-2">
+                  {task.subtitles.map((language) => (
+                    <Button key={language} variant="outline" nativeButton={false} render={<a href={subtitleDownloadUrl(task.id, language)} />}>
+                      <Download className="size-4" />
+                      {t.task[`subtitle_${language}`] || `${language.toUpperCase()} SRT`}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         ) : null}

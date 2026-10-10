@@ -470,3 +470,27 @@ def test_source_assets_require_auth_and_stay_in_workfolder(client, monkeypatch, 
     database.update_task(task_id,session_path=str(tmp_path))
     (tmp_path/"media").mkdir();(tmp_path/"media/thumbnail.jpg").write_bytes(b"outside")
     assert client.get(url).status_code==404
+
+
+def test_subtitle_files_list_the_translation_first_and_stay_in_workfolder(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(main,"WORKFOLDER",tmp_path/"work")
+    metadata=tmp_path/"work/session/metadata"
+    metadata.mkdir(parents=True)
+    (metadata/"subtitles.en.srt").write_text("english")
+    (metadata/"subtitles.zh.srt").write_text("chinese")
+    (metadata/"subtitles.x.srt").write_text("not a language code")
+    task_id=database.create_task("https://www.youtube.com/watch?v=abcdefghijk")
+    database.update_task(task_id,session_path=str(metadata.parent))
+    url=f"/api/tasks/{task_id}/subtitles/zh"
+    assert client.get(url).status_code==401
+    login(client)
+    assert client.get(f"/api/tasks/{task_id}").json()['subtitles']==['zh','en']
+    response=client.get(url+"?download=1")
+    assert response.content==b"chinese"
+    assert response.headers['content-disposition'].startswith('attachment')
+    assert 'subtitles.zh.srt' in response.headers['content-disposition']
+    assert client.get(f"/api/tasks/{task_id}/subtitles/fr").status_code==404
+    assert client.get(f"/api/tasks/{task_id}/subtitles/..%2Fx").status_code==404
+    database.update_task(task_id,session_path=str(tmp_path))
+    (tmp_path/"metadata").mkdir();(tmp_path/"metadata/subtitles.zh.srt").write_text("outside")
+    assert client.get(url).status_code==404

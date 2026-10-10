@@ -238,7 +238,7 @@ def download_assets(ydl, info, session: Path, language):
                 "text": " ".join(row[2] for row in rows),
                 "utterances": [{"start_time": a, "end_time": b, "text": text,
                                 "additions": {"speaker": "1"}, "words": []} for a, b, text in rows]}}
-            from .ffmpeg import _srt_time
+            from .subtitles import _srt_time
             srt = "\n\n".join(f"{i}\n{_srt_time(a)} --> {_srt_time(b)}\n{text}" for i, (a,b,text) in enumerate(rows, 1)) + "\n"
             (metadata / "source_subtitles.srt").write_text(srt, encoding="utf-8")
             (metadata / "source_subtitles.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

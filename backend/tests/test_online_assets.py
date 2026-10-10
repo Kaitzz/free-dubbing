@@ -21,7 +21,7 @@ def test_rolling_captions_dedupe_using_original_context_and_preserve_later_repet
     events=[{"tStartMs":start,"dDurationMs":duration,"segs":[{"utf8":text}]} for start,duration,text in
             [(0,2000,"hello"),(500,2000,"hello world"),(1000,2000,"hello world again"),
              (1500,1500,"hello world again"),(4000,1000,"hello world again")]]
-    from backend.app.adapters.ffmpeg import _srt_time
+    from backend.app.adapters.subtitles import _srt_time
     vtt="WEBVTT\n\n"+"\n\n".join(f"{_srt_time(e['tStartMs'])} --> {_srt_time(e['tStartMs']+e['dDurationMs'])}\n{e['segs'][0]['utf8']}" for e in events)
     rows=parse_captions(vtt,"vtt",True)
     assert [r[2] for r in rows]==["hello","world","again","hello world again"]
@@ -116,7 +116,7 @@ def test_bad_json3_tries_vtt_for_same_manual_track(tmp_path):
 
 def test_captions_real_translation_artifact_and_audio_slice_contract(monkeypatch,tmp_path):
     from backend.app.adapters import openai_translate as tr, audio
-    from backend.app.adapters.ffmpeg import write_srt
+    from backend.app.adapters.subtitles import write_subtitles
     from backend.app.sources import detect_source
     from pydub import AudioSegment
     (tmp_path/'metadata').mkdir();(tmp_path/'media').mkdir()
@@ -132,7 +132,10 @@ def test_captions_real_translation_artifact_and_audio_slice_contract(monkeypatch
     AudioSegment.silent(duration=2500).export(vocals,format='wav')
     clips=audio.split_audio_by_translation(vocals,output,tmp_path)
     assert len(AudioSegment.from_wav(clips/'0001.wav'))==1240
-    assert '00:00:00,500 --> 00:00:01,500' in write_srt(output,tmp_path).read_text(encoding='utf-8')
+    target,source=write_subtitles(output,tmp_path)
+    assert (target.name,source.name)==('subtitles.zh.srt','subtitles.en.srt')
+    assert '00:00:00,500 --> 00:00:01,500\r\n你好' in target.read_text(encoding='utf-8-sig',newline='')
+    assert '00:00:00,500 --> 00:00:01,500\r\nhello' in source.read_text(encoding='utf-8-sig',newline='')
 
 
 def test_partial_vtt_is_rejected_instead_of_losing_a_cue():

@@ -103,6 +103,8 @@ export type TaskStage = {
 
 export type Task = {
   source_assets?: { thumbnail: boolean; "source-subtitles": boolean }
+  // Languages with a subtitle file, the translation first.
+  subtitles?: string[]
   id: string
   url: string
   title: string | null
@@ -371,6 +373,10 @@ export function finalVideoUrl(taskId: string) {
 
 export function finalVideoDownloadUrl(taskId: string) {
   return `/downloads/${taskId}/video`
+}
+
+export function subtitleDownloadUrl(taskId: string, language: string) {
+  return `/api/tasks/${taskId}/subtitles/${language}?download=1`
 }
 
 

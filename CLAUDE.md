@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-YouDub WebUI is a video localization pipeline: download, audio extraction, ASR, LLM translation, TTS dubbing, then muxing and subtitle burn-in. It has a FastAPI backend and a Next.js GUI. This repo (`origin` = `github.com/Kaitzz/free-dubbing`) is a fork of `liuzhao1225/YouDub-webui` that adds a **Colab remote-execution mode**. In that mode the local Windows machine (no GPU) runs the GUI plus a coordinator, and a Google Colab GPU notebook pulls work one stage at a time over a Cloudflare tunnel. This is how the project is used day to day. The upstream mode, where everything runs on one GPU machine, still exists and shares the same pipeline code.
+YouDub WebUI is a video localization pipeline: download, audio extraction, ASR, LLM translation, TTS dubbing, then muxing. Subtitles ship as SRT files and are never burned in. It has a FastAPI backend and a Next.js GUI. This repo (`origin` = `github.com/Kaitzz/free-dubbing`) is a fork of `liuzhao1225/YouDub-webui` that adds a **Colab remote-execution mode**. In that mode the local Windows machine (no GPU) runs the GUI plus a coordinator, and a Google Colab GPU notebook pulls work one stage at a time over a Cloudflare tunnel. This is how the project is used day to day. The upstream mode, where everything runs on one GPU machine, still exists and shares the same pipeline code.
 
 The docs are in Chinese and partly out of date. When docs and code disagree, trust the code:
 - `COLAB_GUI.md`: the current GUI + Colab workflow (most relevant).
@@ -93,16 +93,22 @@ What follows from this:
   - Caption annotations are stripped as captions are parsed (`online_assets._spoken`, also used for auto-caption word fragments): sound cues like `[Music]` and `(gentle music)`, speaker labels, `♪` lyrics, `>>` markers and dialogue dashes. They never become cues and never split a sentence.
   - `translate_asr` drops every segment the translator marks `audio_mode: original` (sound cues, laughter, fillers), so such segments get no subtitle, no dub and no spliced-in original audio.
   - The original-audio paths in TTS and `merge_tts_audio` remain only for translation files written before this change.
+- **Subtitles are files, never burned in.** `merge_video` first writes `metadata/subtitles.<lang>.srt` (`adapters/subtitles.py`): one for the translation and, when every segment has its source text, one for the original language.
+  - Both files have identical cue times. The translation decides where cues break (`split_subtitle_text`); the original text is spread over the same cues by length, so the words in a cue need not match exactly.
+  - They follow what is heard: the dub's adjusted timing (`timings.json`) in dubbing modes, the original timing in `subtitles` mode. An uploaded translated SRT has no source text, so only the translation file is written.
+  - Format: UTF-8 with a BOM and CRLF line ends. `GET /api/tasks/{id}/subtitles/{lang}` serves them, and task detail lists them under `subtitles`.
+  - Output modes: `subtitles` keeps the original audio; `dubbing` and `both` now behave the same, and the GUI offers only `subtitles` and `both`.
 - **Sources and task ids.** `sources.detect_source(url)` maps a task URL to a source and language pair: YouTube en→zh, Bilibili zh→en, and `local://upload/<task_id>?direction=en-zh|ja-zh|zh-en`. URL tasks use the video id as the task id, with `-<output_mode>` appended unless the mode is `both`. Resubmitting a URL therefore returns the existing task.
 - **Adapters** live in `backend/app/adapters/`:
-  - `ytdlp` and `local_video`: input.
+  - `ytdlp` and `local_video`: input. yt-dlp prefers H.264 (`avc1`) video with m4a audio and falls back to any codec; uploads are always transcoded to H.264.
   - `source_audio`: the `separate` stage. It decodes the first audio stream to 44.1 kHz stereo PCM16, the format Demucs used to write.
   - `sensevoice_asr`: FunASR VAD plus CTC word timestamps. `whisper_asr` is legacy and unused.
   - `asr_sentence_fixer`: sentence segmentation.
   - `openai_translate`: any OpenAI-compatible chat API, MiniMax-M3 by default. It runs a preprocess pass, then sends ID-keyed JSON batches that are validated, retried, and split in half on failure. Each item carries an `audio_mode` that decides between dubbing and keeping the original audio (see `audio_mode.py`).
   - `voxcpm` or `minimax_tts`, selected by `DUBBING_TTS_PROVIDER`.
   - `audio`: splits segments, time-stretches them and assembles the dubbing track.
-  - `ffmpeg`: the final mux with the dub as the only audio, SRT, subtitle burn-in, and an NVENC probe with a libx264 fallback.
+  - `ffmpeg`: the final mux. H.264 video is stream-copied; other codecs are re-encoded once (an NVENC probe with a libx264 fallback). The dub, when present, is the only audio.
+  - `subtitles`: SRT writing and cue splitting.
 - **Model lifetime.** Models are module-level singletons. `gpu_memory.release_stage_memory` releases them after GPU stages.
 
 ### Session directory
@@ -212,9 +218,9 @@ The user's main complaints are slowness, crashes, logs and timings that can't be
 
 The per-stage transfer removes most of that overhead. With Drive checkpoints, only GUI files cross the tunnel: about 112 MiB of the 743 MiB session in that task, almost all of it the final video. What remains:
 - **TTS dominates compute.** It took 14.7 of the 22.6 compute minutes in the baseline task. VoxCPM generates one clip at a time, and torch.compile is off on Colab (`VOXCPM_OPTIMIZE=false`).
-- **NVENC is not used on Colab.** `merge_video` falls back to CPU libx264. Check why `ffmpeg_binary()` fails the `h264_nvenc` probe there.
+- **NVENC is not used on Colab.** It only matters for sources that are not H.264, which `merge_video` re-encodes with CPU libx264. Check why `ffmpeg_binary()` fails the `h264_nvenc` probe there.
 - **One Python process per stage.** Each stage imports torch and validates the device again, which costs roughly 10–20 s per stage.
 - **Legacy sessions are still full-size locally.** Tasks from before the Drive change keep their complete sessions under `workfolder/_remote/<task>/<lease>/session`, about 3.9 GB for 8 tasks. That's the only copy of their intermediates, so resuming one fetches its files from the GUI once per runtime.
 - **The Drive checkpoint is on the critical path.** It is written before finish so the stage is durable. On Drive FUSE the write lands in a local cache first, and a runtime that dies before the background upload finishes loses that last checkpoint; that stage then re-runs. Deleted checkpoints go to Drive's trash, which still counts against the quota until it is emptied.
-- **Redundant encoding.** `local_video._transcode_to_mp4` always re-encodes uploads with libx264. `merge_video` re-encodes the video even for dubbing-only output with no burned-in subtitles. `ytdlp._download_with_format_candidates` tries all four format selectors after any error, not only "format unavailable".
+- **Redundant encoding.** `local_video._transcode_to_mp4` always re-encodes uploads with libx264. `ytdlp._download_with_format_candidates` tries all four format selectors after any error, not only "format unavailable".
 - **Long-video scaling.** `audio.merge_tts_audio` decodes each TTS clip up to three times with librosa and builds the track with `np.concatenate` in a loop, which is quadratic. `split_audio` and SenseVoice load the full vocals track into memory through pydub. SenseVoice reports no progress at all.

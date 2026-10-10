@@ -104,7 +104,7 @@ describe("任务详情轮询", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "执行下一阶段" })).toBeInTheDocument()
     })
-    expect(screen.getByText("配音（无硬字幕）")).toBeInTheDocument()
+    expect(screen.getByText("配音 + 字幕文件")).toBeInTheDocument()
 
     await waitFor(() => expect(taskGetCount).toBe(2), { timeout: 3500 })
 
@@ -158,7 +158,7 @@ describe("任务详情轮询", () => {
       await params
     })
 
-    expect(await screen.findByText("硬字幕（保留原音）")).toBeInTheDocument()
+    expect(await screen.findByText("原音 + 字幕文件")).toBeInTheDocument()
     expect(screen.getByText("已跳过")).toBeInTheDocument()
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100")
   })
@@ -179,6 +179,23 @@ it("shows downloaded cover and source captions in task details", async () => {
   expect(image).toHaveAttribute("src", "/api/tasks/task-race/source-asset/thumbnail")
   expect(screen.getByRole("link", { name: "下载原文 CC 字幕（SRT）" }))
     .toHaveAttribute("href", "/api/tasks/task-race/source-asset/source-subtitles?download=1")
+})
+
+
+it("offers each subtitle file for download next to the final video", async () => {
+  const task = { ...taskWithStatus("succeeded"), final_video_path: "/work/video_final.mp4", subtitles: ["zh", "en"] }
+  mocks.fetch.mockImplementation(async (input) => String(input).endsWith("/log")
+    ? new Response("") : jsonResponse(task))
+  vi.stubGlobal("fetch", mocks.fetch)
+  const params = Promise.resolve({ id: "task-race" })
+  await act(async () => {
+    render(<LanguageProvider><Suspense fallback={<div>loading</div>}><TaskDetailPage params={params} /></Suspense></LanguageProvider>)
+    await params
+  })
+  expect((await screen.findByText("中文字幕（SRT）")).closest("a"))
+    .toHaveAttribute("href", "/api/tasks/task-race/subtitles/zh?download=1")
+  expect(screen.getByText("英文字幕（SRT）").closest("a"))
+    .toHaveAttribute("href", "/api/tasks/task-race/subtitles/en?download=1")
 })
 
 

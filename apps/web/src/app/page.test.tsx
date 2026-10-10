@@ -80,7 +80,7 @@ describe("本地视频字幕选择", () => {
     expect(subtitleInput.files).toHaveLength(0)
 
     await user.click(screen.getByLabelText("输出内容"))
-    await user.click(await screen.findByRole("option", { name: "配音（无硬字幕）" }))
+    await user.click(await screen.findByRole("option", { name: "原音 + 字幕文件" }))
     await user.click(screen.getByRole("button", { name: "创建任务" }))
 
     await waitFor(() => {
@@ -93,7 +93,7 @@ describe("本地视频字幕选择", () => {
     const form = uploadCall?.[1]?.body as FormData
     expect((form.get("file") as File).name).toBe("video-b.mp4")
     expect(form.has("subtitle_file")).toBe(false)
-    expect(form.get("output_mode")).toBe("dubbing")
+    expect(form.get("output_mode")).toBe("subtitles")
     expect(mocks.push).toHaveBeenCalledWith("/tasks/task-b")
   })
 
@@ -152,7 +152,7 @@ describe("本地视频字幕选择", () => {
 })
 
 describe("任务输出选择", () => {
-  it("URL 任务可选择保留原音的硬字幕输出", async () => {
+  it("URL 任务可选择保留原音、只输出字幕文件", async () => {
     mocks.fetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input)
       if (path === "/api/tasks" && init?.method === "POST") {
@@ -189,7 +189,8 @@ describe("任务输出选择", () => {
       "https://www.youtube.com/watch?v=abcdefghijk",
     )
     await user.click(screen.getByLabelText("输出内容"))
-    await user.click(await screen.findByRole("option", { name: "硬字幕（保留原音）" }))
+    expect(screen.queryByRole("option", { name: /硬字幕/ })).not.toBeInTheDocument()
+    await user.click(await screen.findByRole("option", { name: "原音 + 字幕文件" }))
     await user.click(screen.getByRole("button", { name: "创建任务" }))
 
     await waitFor(() => expect(mocks.push).toHaveBeenCalledWith("/tasks/abcdefghijk-subtitles"))
@@ -204,7 +205,7 @@ describe("任务输出选择", () => {
 })
 
 describe("任务列表轮询", () => {
-  it("为同一视频的三种输出任务显示可区分的本地化标签", async () => {
+  it("为同一视频的输出任务显示本地化标签，旧的配音任务与配音 + 字幕文件相同", async () => {
     const commonTask = {
       url: "https://www.youtube.com/watch?v=samevideo01",
       title: "同一个视频",
@@ -240,11 +241,11 @@ describe("任务列表轮询", () => {
     )
 
     expect(await screen.findByTestId("task-output-mode-samevideo01-subtitles"))
-      .toHaveTextContent("硬字幕（保留原音）")
+      .toHaveTextContent("原音 + 字幕文件")
     expect(screen.getByTestId("task-output-mode-samevideo01-dubbing"))
-      .toHaveTextContent("配音（无硬字幕）")
+      .toHaveTextContent("配音 + 字幕文件")
     expect(screen.getByTestId("task-output-mode-samevideo01"))
-      .toHaveTextContent("硬字幕和配音")
+      .toHaveTextContent("配音 + 字幕文件")
   })
 
   it("筛选变化后丢弃已取消请求的迟到响应", async () => {

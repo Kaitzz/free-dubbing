@@ -127,21 +127,17 @@ def test_merge_video_stage_uses_translation_and_original_audio_for_subtitles(mon
     video = media / "video_source.mp4"
     translation = metadata / "translation.zh.json"
     video.write_bytes(b"video")
-    translation.write_text('{"translation": []}', encoding="utf-8")
+    translation.write_text(json.dumps({"translation": [
+        {"src": "Hello there", "dst": "你好", "src_lang": "en", "dst_lang": "zh", "start_time": 1000, "end_time": 2000},
+    ]}), encoding="utf-8")
     runner = PipelineRunner(task_id)
     runner.artifacts.session = session
     runner.artifacts.video_file = video
     runner.artifacts.translation_file = translation
     received: dict[str, object] = {}
 
-    def fake_merge_video(video_file, dubbing_file, timings_file, session_dir, *, output_mode):
-        received.update(
-            video_file=video_file,
-            dubbing_file=dubbing_file,
-            timings_file=timings_file,
-            session_dir=session_dir,
-            output_mode=output_mode,
-        )
+    def fake_merge_video(video_file, session_dir, dubbing_file=None):
+        received.update(video_file=video_file, session_dir=session_dir, dubbing_file=dubbing_file)
         final = media / "video_final.mp4"
         final.write_bytes(b"final")
         return final
@@ -150,13 +146,48 @@ def test_merge_video_stage_uses_translation_and_original_audio_for_subtitles(mon
 
     runner._merge_video(database.get_task(task_id))
 
-    assert received == {
-        "video_file": video,
-        "dubbing_file": None,
-        "timings_file": translation,
-        "session_dir": session,
-        "output_mode": "subtitles",
-    }
+    assert received == {"video_file": video, "session_dir": session, "dubbing_file": None}
+    # Nothing is burned in; both languages ship as files on the original timing.
+    for language, text in (("zh", "你好"), ("en", "Hello there")):
+        content = (metadata / f"subtitles.{language}.srt").read_text(encoding="utf-8-sig")
+        assert content.splitlines()[1:3] == ["00:00:01,000 --> 00:00:02,000", text]
+    assert "subtitles: subtitles.zh.srt, subtitles.en.srt" in database.get_task(task_id)["stages"][-1]["last_message"]
+
+
+def test_merge_video_stage_times_subtitles_to_the_dub(monkeypatch, tmp_path):
+    from backend.app.adapters import ffmpeg
+
+    configure_db(monkeypatch, tmp_path)
+    task_id = database.create_task("https://www.youtube.com/watch?v=dubmergevid")
+    session = tmp_path / "session"
+    (session / "media").mkdir(parents=True)
+    (session / "metadata").mkdir()
+    timings = session / "metadata" / "timings.json"
+    timings.write_text(json.dumps({"translation": [
+        {"src": "Hello there", "dst": "你好", "src_lang": "en", "dst_lang": "zh", "start_time": 1000,
+         "end_time": 2000, "actual_start_time": 1500, "actual_end_time": 2600},
+    ]}), encoding="utf-8")
+    runner = PipelineRunner(task_id)
+    runner.artifacts.session = session
+    runner.artifacts.video_file = session / "media" / "video_source.mp4"
+    runner.artifacts.dubbing_file = session / "tmp" / "audio_dubbing.wav"
+    runner.artifacts.timings_file = timings
+    received: list[object] = []
+
+    def fake_merge_video(video_file, session_dir, dubbing_file=None):
+        received.append(dubbing_file)
+        final = session_dir / "media" / "video_final.mp4"
+        final.write_bytes(b"final")
+        return final
+
+    monkeypatch.setattr(ffmpeg, "merge_video", fake_merge_video)
+
+    runner._merge_video(database.get_task(task_id))
+
+    assert received == [session / "tmp" / "audio_dubbing.wav"]
+    for language in ("zh", "en"):
+        content = (session / "metadata" / f"subtitles.{language}.srt").read_text(encoding="utf-8-sig")
+        assert content.splitlines()[1] == "00:00:01,500 --> 00:00:02,600"
 
 
 def test_manual_subtitles_continue_skips_inapplicable_stages_and_finishes(monkeypatch, tmp_path):

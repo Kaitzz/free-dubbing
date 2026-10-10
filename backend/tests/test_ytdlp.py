@@ -61,8 +61,10 @@ def test_ytdlp_enables_node_js_runtime(tmp_path):
     assert options["js_runtimes"] == {"node": {}}
 
 
-def test_ytdlp_format_candidates_start_with_backend_format():
-    assert ytdlp.FORMAT_CANDIDATES[0] == "bestvideo[height<=1080]+bestaudio/best"
+def test_ytdlp_format_candidates_prefer_h264_then_fall_back_to_any_codec():
+    first = ytdlp.FORMAT_CANDIDATES[0].split("/")
+    assert first[0] == "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]"
+    assert first[-2:] == ["bestvideo[height<=1080]+bestaudio", "best"]
     assert "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best" not in ytdlp.FORMAT_CANDIDATES
 
 

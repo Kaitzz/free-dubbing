@@ -118,9 +118,10 @@ export default function Home() {
     { value: "manual", label: t.home.executionManual },
   ]
 
+  // Subtitles are always delivered as files, so "dubbing" now matches "both"; it is
+  // still accepted for older tasks but no longer offered.
   const outputModeOptions: { value: OutputMode; label: string }[] = [
     { value: "subtitles", label: t.home.outputSubtitles },
-    { value: "dubbing", label: t.home.outputDubbing },
     { value: "both", label: t.home.outputBoth },
   ]
 
@@ -583,7 +584,7 @@ export default function Home() {
                           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                             <Badge className={statusBadgeClass(item.status)}>{statusLabel(item.status)}</Badge>
                             <span data-testid={`task-output-mode-${item.id}`}>
-                              {selectedLabel(outputModeOptions, item.output_mode || "both")}
+                              {selectedLabel(outputModeOptions, item.output_mode === "subtitles" ? "subtitles" : "both")}
                             </span>
                             <span>{formatTime(item.created_at)}</span>
                             {isActive(item.status) && item.current_stage ? (

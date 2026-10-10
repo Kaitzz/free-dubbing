@@ -16,8 +16,12 @@ from ..sources import SourceConfig
 from ..youtube import extract_video_id, validate_video_url
 
 
+# H.264 first: the final video then copies the stream instead of re-encoding it, and
+# editors that cannot read VP9 or AV1 still open it.
 FORMAT_CANDIDATES = (
-    "bestvideo[height<=1080]+bestaudio/best",
+    "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]"
+    "/bestvideo[height<=1080][vcodec^=avc1]+bestaudio"
+    "/bestvideo[height<=1080]+bestaudio/best",
     "bestvideo+bestaudio/best",
     "bv*+ba/b",
     "best",

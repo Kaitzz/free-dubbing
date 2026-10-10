@@ -28,7 +28,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
   if (source.ok) {
     const mime = source.headers.get("content-type")?.split(";")[0]
     const extension = kind === "video" ? "mp4" : ({ "image/png": "png", "image/webp": "webp", "image/jpeg": "jpg" }[mime || ""] || "jpg")
-    const suffix = kind === "cover" ? "cover" : task.output_mode === "subtitles" ? "subtitled" : "dubbed"
+    const suffix = kind === "cover" ? "cover" : task.output_mode === "subtitles" ? "original" : "dubbed"
     const filename = `${clean(String(task.title || "Untitled"), 100)} [${clean(id, 40)}] - ${suffix}.${extension}`
     const encoded = encodeURIComponent(filename).replace(/['()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
     responseHeaders.set("content-disposition", `attachment; filename="${id}-${suffix}.${extension}"; filename*=UTF-8''${encoded}`)

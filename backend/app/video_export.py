@@ -42,15 +42,17 @@ def export_info(task):
         url=task["url"].split("?")[0]
     else:
         url=""
-    label={"both":"配音+字幕","dubbing":"配音","subtitles":"字幕"}.get(mode,mode)
-    language={"zh":"中文","en":"英文","ja":"日文"}.get(dst,dst)
+    # Subtitles ship as separate files, so the name only says what is heard.
+    audio=src if mode=="subtitles" else dst
+    label="原音" if mode=="subtitles" else "配音"
+    language={"zh":"中文","en":"英文","ja":"日文"}.get(audio,audio)
     parts=[_clean(title,90)]
     if author: parts.append(_clean(author,35))
     name=" — ".join(parts)+f" [{_clean(video_id,30)}] [{language}{label}].mp4"
     return {"schema_version":1,"filename":name,"title":title,"original_creator":author,
         "source_url":url,"source_video_id":video_id,"original_upload_date":info.get("upload_date"),
         "description":info.get("description") or "","source_language":src,"target_language":dst,
-        "audio_language":src if mode=="subtitles" else dst,"output_mode":mode,
+        "audio_language":audio,"output_mode":mode,
         "processing_note":"Translated/processed with dubbing; creator attribution refers to the original video."}
 
 
