@@ -49,7 +49,19 @@ def test_worker_auth_cannot_access_browser_settings(setup):
     assert TestClient(main.app).post('/api/colab-worker/claim',json=CLAIM).status_code==401
     assert worker.get('/api/settings/openai').status_code==401
     assert worker.post('/api/colab-worker/claim',json=CLAIM).json()=={'job':None}
-    assert browser.get('/api/remote/status').json()['connected']
+    status=browser.get('/api/remote/status').json()
+    assert status['connected'] and status['gpu']
+
+def test_worker_without_gpu_only_takes_subtitle_only_tasks(setup):
+    browser,worker,_=setup
+    dubbing=database.create_task('https://www.youtube.com/watch?v=abcdefghijk')
+    assert claim(worker,gpu=False) is None
+    assert browser.get('/api/remote/status').json()['gpu'] is False
+    subtitles=database.create_task('https://www.youtube.com/watch?v=abcdefghijk',task_id='abcdefghijk-subtitles',
+                                   output_mode='subtitles')
+    job=claim(worker,gpu=False)
+    assert job['task']['id']==subtitles
+    assert database.get_task(dubbing)['status']=='queued'
 
 def test_outdated_worker_is_rejected_before_a_task_starts(setup):
     _,worker,_=setup

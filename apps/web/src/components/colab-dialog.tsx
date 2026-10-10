@@ -33,11 +33,11 @@ export function ColabDialog() {
     <DialogTrigger render={<Button variant="outline" />}>Colab 连接</DialogTrigger>
     <DialogContent className="sm:max-w-lg">
       <DialogHeader><DialogTitle>连接 Google Colab</DialogTitle></DialogHeader>
-      <p>{status ? !status.enabled ? "当前为本机执行模式，请使用 Colab GUI 启动脚本。" : status.connected ? "Colab 已连接，可以创建任务。" : "等待 Colab 连接；新任务会排队。" : "正在读取状态…"}</p>
+      <p>{status ? !status.enabled ? "当前为本机执行模式，请使用 Colab GUI 启动脚本。" : status.connected ? status.gpu === false ? "Colab 已连接（无 GPU）：只处理“原音 + 字幕文件”任务，配音任务会等有 GPU 的 Colab 连接。" : "Colab 已连接，可以创建任务。" : "等待 Colab 连接；新任务会排队。" : "正在读取状态…"}</p>
       {status?.tunnel_url ? <><label htmlFor="colab-url" className="text-sm">本次连接地址</label><input id="colab-url" readOnly value={status.tunnel_url} className="w-full rounded border p-2 text-xs" onFocus={e => e.target.select()} /></> : null}
       <div className="flex gap-4 text-sm underline"><a href="https://colab.research.google.com/github/Kaitzz/free-dubbing/blob/main/notebooks/Dubbing_Launcher.ipynb" target="_blank" rel="noopener noreferrer">打开启动壳模板</a><a href="/api/remote/files/notebook">下载私有启动 Notebook</a></div>
       <ol className="list-decimal space-y-2 pl-5 text-sm">
-        <li>在 Colab 打开 Notebook，选择 GPU 运行时；源码会自动从 GitHub 下载，无需上传源码包。</li>
+        <li>在 Colab 打开 Notebook，选择 GPU 运行时（只做“原音 + 字幕文件”任务时选 CPU 也可以）；源码会自动从 GitHub 下载，无需上传源码包。</li>
         <li>使用本机启动脚本提供的 HTTPS Tunnel 地址。</li>
         <li>使用私有启动 Notebook 中的固定 8 位密码；重启不会更换。仅在需要改密码时使用下方设置，并同步修改私有 Notebook。</li>
         <li>运行 Colab 的领取任务单元，然后回到这里上传视频。</li>

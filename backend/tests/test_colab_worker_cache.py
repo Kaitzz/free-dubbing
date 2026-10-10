@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from scripts import colab_worker
 
 
@@ -213,7 +215,8 @@ def test_prepare_takes_text_results_from_the_gui_and_reruns_lost_audio(tmp_path)
     assert workspace.stages['asr'] == {'lease': 'L3', 'files': {'session/metadata/asr.json': 2}}
 
 
-def test_run_job_checkpoints_the_stage_to_drive_and_uploads_only_gui_files(tmp_path, monkeypatch):
+@pytest.mark.parametrize('gpu', [True, False])
+def test_run_job_checkpoints_the_stage_to_drive_and_uploads_only_gui_files(tmp_path, monkeypatch, gpu):
     import io
     import json
     import httpx
@@ -232,6 +235,8 @@ def test_run_job_checkpoints_the_stage_to_drive_and_uploads_only_gui_files(tmp_p
         def poll(self): return 0
         def wait(self): return 0
     def start(command, env, **kwargs):
+        # A runtime without a GPU runs the stage on CPU.
+        assert (env['DEVICE'], env['FUNASR_DEVICE']) == (('cuda', 'cuda:0') if gpu else ('cpu', 'cpu'))
         session = Path(env['WORKFOLDER'])/'session'
         (session/'media/audio_vocals.wav').write_bytes(b'vocals')
         (session/'metadata').mkdir(exist_ok=True)
@@ -254,7 +259,7 @@ def test_run_job_checkpoints_the_stage_to_drive_and_uploads_only_gui_files(tmp_p
             return httpx.Response(200, json={'status': 'paused', 'files': {}})
         return httpx.Response(200, json={'ok': True})
     with httpx.Client(base_url='https://test.invalid', transport=httpx.MockTransport(handler)) as client:
-        colab_worker.run_job(client, job)
+        colab_worker.run_job(client, job, gpu)
     with ZipFile(io.BytesIO(b''.join(uploads))) as z:
         assert z.namelist() == ['session/metadata/separation.json']
     assert finished['files'] == {'session/metadata/separation.json': 2} and finished['ran'] == ['separate']
@@ -264,6 +269,20 @@ def test_run_job_checkpoints_the_stage_to_drive_and_uploads_only_gui_files(tmp_p
     assert sorted(index['separate']['files']) == ['session/media/audio_vocals.wav', 'session/metadata/separation.json']
     state = json.loads((tmp_path/'remote-runs/tasks/task-1/state.json').read_text())['stages']
     assert state['separate']['lease'] == job['lease'] and state['download']['lease'] == 'L1'
+
+
+@pytest.mark.parametrize('reply, expected', [(subprocess.CompletedProcess([], 0, 'True\n'), True),
+                                             (subprocess.CompletedProcess([], 0, 'False\n'), False),
+                                             (subprocess.CompletedProcess([], 1, ''), False),
+                                             (OSError('no python'), False)])
+def test_gpu_detection_treats_any_failure_as_no_gpu(monkeypatch, reply, expected):
+    def run(command, **kwargs):
+        assert command[1:] == ['-c', 'import torch; print(torch.cuda.is_available())']
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+    monkeypatch.setattr(colab_worker.subprocess, 'run', run)
+    assert colab_worker.gpu_available() is expected
 
 
 def test_commit_retries_while_coordinator_is_busy(monkeypatch):

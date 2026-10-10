@@ -16,6 +16,8 @@
 4. 运行到 Google Drive 单元时，在弹窗中授权访问当前 Colab 账号的 Drive（每个运行时一次）。
 5. 运行领取任务单元，回到 GUI 创建任务、查看进度、继续/重做、播放/下载视频。
 
+只做“原音 + 字幕文件”任务时可以不用 GPU：在 Colab 里把运行时类型改成 CPU，再运行启动 Notebook。Worker 发现没有 GPU 时只领取“原音 + 字幕文件”任务，配音任务留在队列里，等有 GPU 的 Colab 连接后再处理；GUI 的“Colab 连接”窗口会显示“无 GPU”。有字幕的视频不需要任何模型；没有字幕的视频会在 CPU 上跑 SenseVoice，速度较慢。
+
 换用另一个 Google 账号跑 Colab 时：用该账号打开 Colab，上传 data/gui/Dubbing_Launcher.ipynb 并另存到该账号的 Drive；在该账号的 Colab Secrets 中重新添加 MINIMAX_API_KEY（必需）以及 YOUTUBE_COOKIES、HF_TOKEN（可选），并开启 Notebook access——Secrets 按账号保存，不会随 Notebook 带过去。阶段检查点会写入这个账号的 Drive。
 
 用户已授权任务视频、阶段音频和字幕传入自己的 Colab并回传结果。仅 YouTube 下载阶段会发送 GUI 保存的 YouTube Cookie；本机 API 密钥不传输。

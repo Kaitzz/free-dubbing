@@ -22,7 +22,7 @@ router = APIRouter()
 lock = threading.RLock()
 LEASE_SECONDS = 180
 # Bump on incompatible worker protocol changes; mismatches are rejected, never downgraded.
-TRANSFER_VERSION = 3
+TRANSFER_VERSION = 4
 MAX_CHUNK = 64 * 1024 * 1024
 MAX_JSON = 4 * 1024 * 1024
 _TIMESTAMP = re.compile(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})')
@@ -183,7 +183,8 @@ def status():
     connection=config.DATA_DIR/'gui/connection.json'
     tunnel=json.loads(connection.read_text(encoding='utf-8')).get('tunnel','') if connection.exists() else ''
     return {'tunnel_url':tunnel, 'enabled': enabled(), 'connected': time.time()-last < 40,
-            'paired': bool(database.get_setting('remote.token_hash'))}
+            'paired': bool(database.get_setting('remote.token_hash')),
+            'gpu': database.get_setting('remote.worker_gpu', '1') != '0'}
 
 @router.post('/api/remote/token')
 def new_token(payload: dict | None = Body(default=None)):
@@ -242,9 +243,13 @@ def claim(payload: dict | None = Body(default=None)):
         raise HTTPException(426, f'Colab worker code is outdated (transfer protocol {TRANSFER_VERSION} required); '
                                  're-run the launcher notebook')
     claim_id = str(payload.get('claim_id') or '')[:64] or None
+    # A worker without a GPU only takes subtitle-only tasks: VoxCPM is far too slow on CPU.
+    gpu = payload.get('gpu') is not False
     with lock:
         expire()
         database.set_setting('remote.last_seen', str(time.time()))
+        if database.get_setting('remote.worker_gpu', '1') != ('1' if gpu else '0'):
+            database.set_setting('remote.worker_gpu', '1' if gpu else '0')
         with database.connect() as c:
             if claim_id:
                 row = c.execute("SELECT * FROM remote_leases WHERE state='active' AND claim_id=?", (claim_id,)).fetchone()
@@ -254,7 +259,8 @@ def claim(payload: dict | None = Body(default=None)):
             c.execute('BEGIN IMMEDIATE')
             if c.execute("SELECT 1 FROM remote_leases WHERE state IN ('active','committing')").fetchone():
                 return {'job':None}
-            row = c.execute("SELECT id FROM tasks WHERE status='queued' ORDER BY created_at LIMIT 1").fetchone()
+            only = "" if gpu else " AND output_mode='subtitles'"
+            row = c.execute(f"SELECT id FROM tasks WHERE status='queued'{only} ORDER BY created_at LIMIT 1").fetchone()
             if not row:
                 return {'job':None}
             task_id = row['id']

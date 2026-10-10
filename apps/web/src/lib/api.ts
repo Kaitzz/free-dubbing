@@ -380,6 +380,7 @@ export function subtitleDownloadUrl(taskId: string, language: string) {
 }
 
 
-export type ColabStatus = { tunnel_url?: string; enabled: boolean; connected: boolean; paired: boolean }
+// gpu is false while the connected worker runs on a CPU-only runtime.
+export type ColabStatus = { tunnel_url?: string; enabled: boolean; connected: boolean; paired: boolean; gpu?: boolean }
 export function getColabStatus() { return request<ColabStatus>("/api/remote/status") }
 export function createColabToken(password: string) { return request<{token: string}>("/api/remote/token", {method:"POST", body: JSON.stringify({password})}) }

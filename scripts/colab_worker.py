@@ -28,7 +28,7 @@ from backend.app.youtube import is_youtube_url
 from scripts.colab_credentials import write_youtube_cookie
 
 ROOT=Path(__file__).resolve().parents[1]
-TRANSFER_VERSION = 3
+TRANSFER_VERSION = 4
 CHUNK = 64 * 1024 * 1024  # Below Cloudflare's 100 MB request limit.
 KEEP_WORKSPACES = 3
 
@@ -433,7 +433,22 @@ def commit(client, prefix, payload):
         delay = min(delay * 2, 30)
 
 
-def run_job(client, job):
+def gpu_available():
+    """Whether torch here can use CUDA, probed in a short-lived process so the worker stays light."""
+    try:
+        probe = subprocess.run([sys.executable, '-c', 'import torch; print(torch.cuda.is_available())'],
+                               capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return probe.returncode == 0 and probe.stdout.strip().endswith('True')
+
+
+def device_env(gpu):
+    """Pipeline devices: CUDA on a GPU runtime, otherwise CPU (SenseVoice then runs on CPU)."""
+    return {'DEVICE': 'cuda', 'FUNASR_DEVICE': 'cuda:0'} if gpu else {'DEVICE': 'cpu', 'FUNASR_DEVICE': 'cpu'}
+
+
+def run_job(client, job, gpu=True):
     started=time.monotonic()
     token=job['lease']; original=job['task']
     if job.get('transfer_version') != TRANSFER_VERSION:
@@ -495,7 +510,7 @@ def run_job(client, job):
         env=os.environ.copy()
         env.update(YOUDUB_DATA_DIR=str(lease_dir/'data'),WORKFOLDER=str(workspace.work),
             YOUDUB_EXECUTION_BACKEND='local',MODEL_CACHE_DIR=model_cache_path(),
-            DEVICE='cuda',FUNASR_DEVICE='cuda:0',
+            **device_env(gpu),
             DUBBING_VIDEO_ENCODER=os.getenv('DUBBING_VIDEO_ENCODER','auto'),
             DUBBING_TTS_PROVIDER=os.getenv('DUBBING_TTS_PROVIDER','voxcpm'),
             MINIMAX_TTS_MODEL=os.getenv('MINIMAX_TTS_MODEL','speech-2.8-turbo'),
@@ -636,6 +651,10 @@ def main():
     with httpx.Client(base_url=args.url.rstrip('/'),headers={'Authorization':'Bearer '+token},
                       timeout=httpx.Timeout(120, connect=30),follow_redirects=False) as client:
         until=time.monotonic()+args.minutes*60
+        gpu=gpu_available()
+        if not gpu:
+            print('[worker] No GPU on this runtime: only subtitle-only tasks (original audio + subtitle files) '
+                  'will be claimed; dubbing tasks wait for a worker with a GPU.',flush=True)
         print('Colab worker connected; create a task in the local GUI. Stop this cell to disconnect.',flush=True)
         ready=False; claim_id=None; warned=0.0
         while time.monotonic()<until:
@@ -644,15 +663,19 @@ def main():
                     version=coordinator_version(client)
                     if version!=TRANSFER_VERSION:
                         if time.monotonic()-warned>300:
+                            # Tell the user which side runs the older code.
+                            fix=('Re-run the launcher notebook to load the new worker code'
+                                 if isinstance(version,int) and version>TRANSFER_VERSION
+                                 else 'Restart scripts/start_colab_gui.ps1 locally')
                             print(f'[worker] Local GUI services speak transfer protocol {version or "1 or older"}; '
-                                  f'this worker needs {TRANSFER_VERSION}. Restart scripts/start_colab_gui.ps1 '
-                                  'locally; retrying every 30 s.',flush=True)
+                                  f'this worker speaks {TRANSFER_VERSION}. {fix}; retrying every 30 s.',flush=True)
                             warned=time.monotonic()
                         time.sleep(30);continue
                     ready=True
                 # Reusing the id lets the coordinator return a lease whose response was lost.
                 claim_id=claim_id or uuid4().hex
-                response=client.post('/api/colab-worker/claim',json={'transfer_version':TRANSFER_VERSION,'claim_id':claim_id})
+                response=client.post('/api/colab-worker/claim',
+                                     json={'transfer_version':TRANSFER_VERSION,'claim_id':claim_id,'gpu':gpu})
                 if response.status_code in {404,426}:
                     ready=False;continue
                 response.raise_for_status()
@@ -664,7 +687,7 @@ def main():
                 time.sleep(5);continue
             claim_id=None
             try:
-                run_job(client,job)
+                run_job(client,job,gpu)
             except Exception:
                 # The coordinator expires uncommitted leases; keep serving later claims.
                 print('[worker] Lease did not complete:\n'+traceback.format_exc(),flush=True)

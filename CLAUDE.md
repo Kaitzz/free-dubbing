@@ -71,7 +71,8 @@ Colab Secrets (`MINIMAX_API_KEY`, plus the optional `YOUTUBE_COOKIES` and `HF_TO
 What follows from this:
 - **Worker-side changes need a push.** Changes to `backend/app/**`, `scripts/colab_worker.py`, `scripts/remote_job.py`, `notebooks/YouDub_GUI_Colab.ipynb` or `requirements-colab.txt` reach Colab only after pushing to `origin/main` and re-running the launcher. Every new SHA gets a fresh checkout and a fresh pip install, which takes minutes. A running worker is never hot-updated.
 - **Coordinator-side changes need a restart.** Changes to `main.py`, `remote.py` and the rest of the local side take effect after restarting `start_colab_gui.ps1`. uvicorn runs without `--reload`, so a stale process keeps serving old code; to confirm which code is live, compare the uvicorn process start time with the commit time. The two sides can run different commits, and `remote.TRANSFER_VERSION` / `colab_worker.TRANSFER_VERSION` must match. A mismatch is rejected rather than downgraded: an old worker's claim gets 426, and a new worker that sees an old coordinator (`/hello` returns 404) keeps retrying every 30 s and tells the user to restart the local services. Bump the version on any incompatible protocol change, and change both sides together.
-- **The Colab worker ignores the local `.env`.** Its environment is hardcoded in `colab_worker.run_job`: `DEVICE=cuda`, `DUBBING_VIDEO_ENCODER=auto`, VoxCPM low-memory init with no compile, and so on. The GUI's translation base URL, model and concurrency are passed along. The API key comes from the Colab Secret `MINIMAX_API_KEY` and is never sent from the local machine.
+- **The Colab worker ignores the local `.env`.** Its environment is hardcoded in `colab_worker.run_job`: `DEVICE=cuda` (`cpu` on a runtime without a GPU), `DUBBING_VIDEO_ENCODER=auto`, VoxCPM low-memory init with no compile, and so on. The GUI's translation base URL, model and concurrency are passed along. The API key comes from the Colab Secret `MINIMAX_API_KEY` and is never sent from the local machine.
+- **A CPU runtime can serve subtitle-only tasks.** At startup the worker asks torch whether CUDA works (`gpu_available`, in a short-lived process). Without a GPU, every claim sends `gpu: false`, the coordinator then only hands out `output_mode='subtitles'` tasks, and stages run with `DEVICE=cpu`, so SenseVoice runs on CPU for videos without captions. Dubbing tasks stay queued until a GPU worker claims them. The preflight no longer requires CUDA, and the GUI's Colab dialog says when the connected worker has no GPU.
 - **Colab installs can drift.** Requirements are mostly unpinned, and yt-dlp is always upgraded, so a fresh runtime can pick up new library versions. If Colab's torch version is missing from the notebook's `codec_versions` map (for TorchCodec), the install fails immediately.
 - **Notebooks are tested.** `backend/tests/test_dubbing_launcher.py` requires every notebook code cell to compile and to be saved without outputs.
 
@@ -144,7 +145,7 @@ Backend startup marks interrupted tasks failed ("Backend restarted before the ta
 
 **local** (`YOUDUB_EXECUTION_BACKEND` unset): `worker.py` runs one daemon thread with a FIFO queue inside the uvicorn process and calls `pipeline.run_task`.
 
-**colab** (`YOUDUB_EXECUTION_BACKEND=colab`): `worker.enqueue` and `worker.start` do nothing, and tasks stay `queued` in SQLite until a worker claims them. One lease covers one stage. `backend/app/remote.py` talks to `scripts/colab_worker.py` through `scripts/worker_gateway.py`, which forwards only `hello`, `claim` and `<lease>/{files,heartbeat,output,finish}`. The current protocol is `TRANSFER_VERSION = 3`.
+**colab** (`YOUDUB_EXECUTION_BACKEND=colab`): `worker.enqueue` and `worker.start` do nothing, and tasks stay `queued` in SQLite until a worker claims them. One lease covers one stage. `backend/app/remote.py` talks to `scripts/colab_worker.py` through `scripts/worker_gateway.py`, which forwards only `hello`, `claim` and `<lease>/{files,heartbeat,output,finish}`. The current protocol is `TRANSFER_VERSION = 4`.
 
 Where each copy of a task's data lives:
 - **Colab local disk** holds the full working copy. The workspace root is `$DUBBING_WORKSPACE/tasks/<task_id>/` (the notebook sets `/content/dubbing-workspace`; it defaults to `remote-runs/`). It contains `workfolder/{session,_uploads/<id>}`, `state.json`, and `leases/<lease>/{data,task.json,worker.log}`, and at most 3 task workspaces are kept. `state.json` records, per committed stage, the lease that produced it and the session files it owns. A file belongs to the last stage that wrote it.
@@ -153,7 +154,7 @@ Where each copy of a task's data lives:
 - **`remote_stage_versions`** (on the coordinator) maps each succeeded stage to the lease that committed it, so stale checkpoints are never reused.
 
 Nothing in the transfer hashes file contents. Each lease goes like this:
-1. **Claim.** `POST /api/colab-worker/claim` with `{transfer_version, claim_id}` returns:
+1. **Claim.** `POST /api/colab-worker/claim` with `{transfer_version, claim_id, gpu}` returns the oldest queued task (only `subtitles` tasks when `gpu` is false) as:
    - a lease token (180 s TTL) and a task snapshot;
    - the translation settings without the key;
    - `files`: the coordinator's files as `{name: [size, mtime_ns]}`. That means uploads, GUI files, or the full session of a legacy task. `uploads/video/*` is omitted once download has succeeded.
